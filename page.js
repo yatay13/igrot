@@ -302,7 +302,10 @@ export default function Pagina() {
             {facetas?.error
               ? "No pude leer los filtros desde la base."
               : facetas
-              ? `${facetas.total} carta${facetas.total === 1 ? "" : "s"} en la base`
+              ? `${facetas.total} carta${facetas.total === 1 ? "" : "s"} en la base` +
+                (facetas.muestra
+                  ? ` · los números de cada tema salen de una muestra de ${facetas.muestra}`
+                  : "")
               : "Cargando filtros…"}
           </span>
           <button type="button" onClick={limpiar}>

@@ -97,18 +97,35 @@ export async function rpc(nombre, argumentos) {
   return r.json();
 }
 
-/** Lee filas de una tabla. */
-export async function tabla(nombre, parametros = {}) {
+/** Lee filas de una tabla.
+ *
+ *  Con `conTotal` pide además el total de filas que hay en la tabla, no sólo
+ *  las que vuelven. Hace falta porque Supabase recorta cuántas filas sirve por
+ *  pedido: contar las que llegaron da un número más chico que el real, y el
+ *  sitio terminaba diciendo que había menos cartas de las que hay.
+ */
+export async function tabla(nombre, parametros = {}, conTotal = false) {
   const url = process.env.SUPABASE_URL;
   const clave = process.env.SUPABASE_KEY;
   if (!url || !clave) throw new Error("faltan SUPABASE_URL o SUPABASE_KEY");
 
+  const cabeceras = { apikey: clave, Authorization: `Bearer ${clave}` };
+  if (conTotal) cabeceras.Prefer = "count=exact";
+
   const query = new URLSearchParams(parametros).toString();
   const r = await fetch(`${url.replace(/\/$/, "")}/rest/v1/${nombre}?${query}`, {
-    headers: { apikey: clave, Authorization: `Bearer ${clave}` },
+    headers: cabeceras,
   });
   if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 300)}`);
-  return r.json();
+
+  const filas = await r.json();
+  if (!conTotal) return filas;
+
+  // el total viene en la cabecera, con la forma "0-999/1471"
+  const rango = r.headers.get("content-range") || "";
+  const despues = rango.split("/")[1];
+  const total = despues && despues !== "*" ? Number(despues) : filas.length;
+  return { filas, total };
 }
 
 const NOMBRE_DE_IDIOMA = {

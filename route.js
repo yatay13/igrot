@@ -1,7 +1,9 @@
 import { tabla } from "../../lib/servicios";
 
 export const runtime = "nodejs";
-export const revalidate = 3600;
+// Un minuto. Antes era una hora, y después de cargar cartas nuevas el sitio
+// seguía anunciando el número viejo sin que nada estuviera mal en la base.
+export const revalidate = 60;
 
 export async function GET() {
   try {
@@ -13,10 +15,15 @@ export async function GET() {
     // Los temas y las festividades salen de las propias cartas: así la lista
     // refleja lo que hay de verdad y no una lista escrita a mano que se
     // desactualiza.
-    const cartas = await tabla("cartas", {
-      select: "temas,festividades,anio_gregoriano",
-      limit: "2000",
-    });
+    //
+    // El total NO se cuenta sobre estas filas: Supabase recorta cuántas sirve
+    // por pedido, así que contarlas daría de menos. Viene aparte, de la
+    // cabecera, y es el número de la tabla entera.
+    const { filas: cartas, total } = await tabla(
+      "cartas",
+      { select: "temas,festividades,anio_gregoriano", limit: "2000" },
+      true
+    );
 
     const contar = (campo) => {
       const cuenta = new Map();
@@ -40,7 +47,10 @@ export async function GET() {
       festividades: contar("festividades"),
       anioMin: anios.length ? Math.min(...anios) : null,
       anioMax: anios.length ? Math.max(...anios) : null,
-      total: cartas.length,
+      total,
+      // si Supabase sirvió menos filas de las que hay, los conteos por tema
+      // son sobre una muestra y no sobre todo
+      muestra: cartas.length < total ? cartas.length : null,
     });
   } catch (e) {
     return Response.json({ error: String(e.message || e) }, { status: 500 });
