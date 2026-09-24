@@ -33,6 +33,9 @@ function mensajeAmable(crudo) {
     return "Se agotó la cuota gratis de Gemini por hoy. Probá de nuevo más tarde.";
   if (/403|401|API key|API_KEY/i.test(t))
     return "La clave de Gemini no está funcionando. Revisala en las variables de entorno de Vercel.";
+  if (/hebreo sin traducir/i.test(t))
+    return "El modelo devolvió el hebreo en vez de traducirlo. Probá otra vez: " +
+      "suele salir bien al segundo intento.";
   if (/faltan SUPABASE/i.test(t))
     return "Faltan las variables SUPABASE_URL y SUPABASE_KEY en Vercel.";
   if (/Supabase 4|Supabase 5/i.test(t))

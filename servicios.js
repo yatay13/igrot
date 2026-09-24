@@ -120,6 +120,50 @@ const NOMBRE_DE_IDIOMA = {
   yi: "ídish",
 };
 
+/** Proporción de letras hebreas sobre el total de letras. */
+function proporcionHebrea(texto) {
+  const letras = String(texto).match(/\p{L}/gu) || [];
+  if (!letras.length) return 0;
+  const hebreas = letras.filter((c) => /[֐-׿]/.test(c)).length;
+  return hebreas / letras.length;
+}
+
+function armarPrompt(texto, nombreIdioma, parte, total, insistir) {
+  // El pedido arranca y termina con la orden de traducir. La aclaración de que
+  // es un tramo va subordinada, porque cuando iba adelante y en imperativo
+  // ("no completes, no resumas") el modelo a veces elegía lo más seguro:
+  // devolver el hebreo tal cual, sin traducir nada.
+  const ubicacion =
+    total > 1
+      ? `, que es el tramo ${parte} de ${total} de una carta del Rebe de Lubavitch`
+      : `, que es una carta del Rebe de Lubavitch`;
+
+  const reglas = [
+    `El original es hebreo rabínico salido de un OCR: puede tener errores de ` +
+      `lectura y abreviaturas. Traducí el sentido y desplegá las abreviaturas ` +
+      `cuando estén claras.`,
+    `Si una parte es ilegible, poné [ilegible] en vez de inventar.`,
+    `Conservá los saltos de párrafo.`,
+    total > 1
+      ? `El tramo puede empezar o terminar en mitad de una frase: traducí lo ` +
+        `que hay, sin completarlo ni resumirlo, y sin agregar encabezados, ` +
+        `títulos ni la palabra "continuación".`
+      : null,
+    `Devolvé únicamente el texto en ${nombreIdioma}, sin comentarios y sin ` +
+      `copiar el hebreo.`,
+    insistir
+      ? `IMPORTANTE: la respuesta anterior devolvió el hebreo sin traducir. ` +
+        `La respuesta tiene que estar escrita en ${nombreIdioma}.`
+      : null,
+  ].filter(Boolean);
+
+  return (
+    `Traducí al ${nombreIdioma} el siguiente texto${ubicacion}.\n\n` +
+    reglas.map((r) => `- ${r}`).join("\n") +
+    `\n\n---\n\n${texto}`
+  );
+}
+
 /** Traduce un tramo del texto hebreo de una carta.
  *
  *  La página parte la carta en tramos y los pide de a uno. Antes se mandaba
@@ -130,45 +174,43 @@ const NOMBRE_DE_IDIOMA = {
 export async function traducir(texto, idioma, apiKey, parte = 1, total = 1) {
   const { texto: candidatos } = await modelos(apiKey);
   const nombreIdioma = NOMBRE_DE_IDIOMA[idioma] || idioma;
+  // Traducir al hebreo o al ídish sí devuelve letras hebreas: ahí el control
+  // de eco no corresponde.
+  const esperaHebreo = idioma === "he" || idioma === "yi";
 
-  const situacion =
-    total > 1
-      ? `Este es el tramo ${parte} de ${total} de una carta del Rebe de ` +
-        `Lubavitch. Traducí sólo este tramo. Puede empezar o terminar en ` +
-        `mitad de una frase: no la completes ni la resumas, y no agregues ` +
-        `encabezados, títulos ni "continuación".`
-      : `Esta es una carta del Rebe de Lubavitch.`;
-
-  const prompt =
-    `${situacion} Traducila al ${nombreIdioma}.\n\n` +
-    `El original está en hebreo rabínico y viene de un OCR, así que puede ` +
-    `tener errores de lectura y abreviaturas. Traducí el sentido, desplegando ` +
-    `las abreviaturas cuando estén claras. Si una parte es ilegible, poné ` +
-    `[ilegible] en vez de inventar. Conservá los saltos de párrafo. ` +
-    `Devolvé sólo la traducción, sin comentarios.\n\n---\n\n${texto}`;
-
-  let ultimoError = "sin modelos de texto";
-  for (const modelo of candidatos.slice(0, 4)) {
+  async function pedir(modelo, insistir) {
     const r = await fetch(`${GEMINI}/models/${modelo}:generateContent?key=${apiKey}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
+        contents: [{ parts: [{ text: armarPrompt(texto, nombreIdioma, parte, total, insistir) }] }],
         generationConfig: { temperature: 0.3, maxOutputTokens: 8192 },
       }),
     });
-    if (r.ok) {
-      const datos = await r.json();
-      const candidato = datos?.candidates?.[0];
-      const partes = candidato?.content?.parts || [];
-      const salida = partes.map((p) => p.text || "").join("").trim();
-      if (salida) {
-        // Si aun así se llenó el cupo de salida, la página vuelve a partir
-        // este tramo en vez de mostrar media traducción como si fuera entera.
-        return { traduccion: salida, truncada: candidato?.finishReason === "MAX_TOKENS" };
+    if (!r.ok) return { error: `HTTP ${r.status}` };
+    const datos = await r.json();
+    const candidato = datos?.candidates?.[0];
+    const salida = (candidato?.content?.parts || [])
+      .map((p) => p.text || "").join("").trim();
+    if (!salida) return { error: "respuesta vacía" };
+    return { salida, truncada: candidato?.finishReason === "MAX_TOKENS" };
+  }
+
+  let ultimoError = "sin modelos de texto";
+  for (const modelo of candidatos.slice(0, 4)) {
+    for (const insistir of [false, true]) {
+      const { salida, truncada, error } = await pedir(modelo, insistir);
+      if (error) { ultimoError = `${modelo}: ${error}`; break; }
+
+      // Si volvió en hebreo, el modelo copió en vez de traducir. Se insiste
+      // una vez y, si sigue igual, se pasa al modelo siguiente. Mostrarlo
+      // sería peor que fallar: parece una traducción y no lo es.
+      if (!esperaHebreo && proporcionHebrea(salida) > 0.5) {
+        ultimoError = `${modelo}: devolvió el hebreo sin traducir`;
+        continue;
       }
+      return { traduccion: salida, truncada };
     }
-    ultimoError = `${modelo}: HTTP ${r.status}`;
   }
   throw new Error(`no pude traducir (${ultimoError})`);
 }
