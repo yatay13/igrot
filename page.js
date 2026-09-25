@@ -44,6 +44,7 @@ function mensajeAmable(crudo) {
 }
 
 const LARGO_DE_TRAMO = 2500;
+const POR_PAGINA = 20;
 
 /** Parte una carta larga en tramos para traducirlos de a uno.
  *
@@ -115,7 +116,10 @@ export default function Pagina() {
   const [filtros, setFiltros] = useState(FILTROS_VACIOS);
   const [facetas, setFacetas] = useState(null);
   const [resultados, setResultados] = useState(null);
+  const [total, setTotal] = useState(0);
+  const [paginable, setPaginable] = useState(true);
   const [buscando, setBuscando] = useState(false);
+  const [trayendoMas, setTrayendoMas] = useState(false);
   const [error, setError] = useState(null);
   // <details open={...}> no alcanza: React lo vuelve a imponer en cada
   // re-render y el panel se cerraba solo mientras lo estabas usando.
@@ -149,17 +153,44 @@ export default function Pagina() {
         body: JSON.stringify({
           consulta: textoUsado,
           filtros: filtrosUsados,
-          limite: 20,
+          limite: POR_PAGINA,
         }),
       });
       const datos = await r.json();
       if (datos.error) throw new Error(datos.error);
       setResultados(datos.resultados || []);
+      setTotal(datos.total ?? (datos.resultados || []).length);
+      setPaginable(datos.paginable !== false);
     } catch (e) {
       setError({ texto: mensajeAmable(e.message || e), detalle: String(e.message || e) });
       setResultados(null);
+      setTotal(0);
     } finally {
       setBuscando(false);
+    }
+  }
+
+  /** Trae las siguientes y las agrega abajo, sin perder las que ya están. */
+  async function traerMas() {
+    setTrayendoMas(true);
+    try {
+      const r = await fetch("/api/buscar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          consulta,
+          filtros,
+          limite: POR_PAGINA,
+          desplazamiento: resultados.length,
+        }),
+      });
+      const datos = await r.json();
+      if (datos.error) throw new Error(datos.error);
+      setResultados((antes) => [...antes, ...(datos.resultados || [])]);
+    } catch (e) {
+      setError({ texto: mensajeAmable(e.message || e), detalle: String(e.message || e) });
+    } finally {
+      setTrayendoMas(false);
     }
   }
 
@@ -303,8 +334,8 @@ export default function Pagina() {
               ? "No pude leer los filtros desde la base."
               : facetas
               ? `${facetas.total} carta${facetas.total === 1 ? "" : "s"} en la base` +
-                (facetas.muestra
-                  ? ` · los números de cada tema salen de una muestra de ${facetas.muestra}`
+                (facetas.exactas === false
+                  ? " · los números de cada tema son aproximados"
                   : "")
               : "Cargando filtros…"}
           </span>
@@ -320,6 +351,8 @@ export default function Pagina() {
         <p className="conteo">
           {resultados.length === 0
             ? "Ninguna carta coincide."
+            : total > resultados.length
+            ? `${total} cartas · mostrando las primeras ${resultados.length}`
             : `${resultados.length} carta${resultados.length === 1 ? "" : "s"}`}
         </p>
       )}
@@ -332,6 +365,23 @@ export default function Pagina() {
           alTocarTema={buscarTema}
         />
       ))}
+
+      {resultados !== null && resultados.length > 0 && total > resultados.length && (
+        <div className="traer-mas">
+          {paginable ? (
+            <button type="button" onClick={traerMas} disabled={trayendoMas}>
+              {trayendoMas
+                ? "Trayendo…"
+                : `Ver ${Math.min(POR_PAGINA, total - resultados.length)} más`}
+            </button>
+          ) : (
+            <p className="nota-chica">
+              Para ver las {total - resultados.length} restantes hay que correr
+              el SQL de los conteos en Supabase.
+            </p>
+          )}
+        </div>
+      )}
 
       {resultados === null && !error && (
         <div className="aviso">
