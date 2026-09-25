@@ -310,3 +310,7 @@ button:disabled { opacity: 0.55; cursor: default; }
   word-break: break-word;
   color: var(--suave);
 }
+
+.traer-mas { text-align: center; margin: 8px 0 24px; }
+.traer-mas button { padding: 10px 22px; }
+.nota-chica { font-size: 0.85rem; color: var(--suave); margin: 0; }

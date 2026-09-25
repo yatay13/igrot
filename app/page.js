@@ -33,11 +33,69 @@ function mensajeAmable(crudo) {
     return "Se agotó la cuota gratis de Gemini por hoy. Probá de nuevo más tarde.";
   if (/403|401|API key|API_KEY/i.test(t))
     return "La clave de Gemini no está funcionando. Revisala en las variables de entorno de Vercel.";
+  if (/hebreo sin traducir/i.test(t))
+    return "El modelo devolvió el hebreo en vez de traducirlo. Probá otra vez: " +
+      "suele salir bien al segundo intento.";
   if (/faltan SUPABASE/i.test(t))
     return "Faltan las variables SUPABASE_URL y SUPABASE_KEY en Vercel.";
   if (/Supabase 4|Supabase 5/i.test(t))
     return "La base no respondió bien. Fijate que el esquema SQL esté corrido y la clave sea la anon.";
   return t;
+}
+
+const LARGO_DE_TRAMO = 2500;
+const POR_PAGINA = 20;
+
+/** Parte una carta larga en tramos para traducirlos de a uno.
+ *
+ *  Corta por párrafo, y si un párrafo solo ya es más largo que el tramo, por
+ *  renglón. Sólo como último recurso corta a lo bruto por cantidad de letras:
+ *  respetar dónde termina una idea hace que los tramos peguen bien al unirlos.
+ */
+function partirEnTramos(texto, largo = LARGO_DE_TRAMO) {
+  const limpio = String(texto || "").trim();
+  if (limpio.length <= largo) return [limpio];
+
+  const pedazos = [];
+  for (const parrafo of limpio.split(/\n\s*\n/)) {
+    if (parrafo.length <= largo) {
+      pedazos.push(parrafo);
+      continue;
+    }
+    for (const renglon of parrafo.split("\n")) {
+      if (renglon.length <= largo) {
+        pedazos.push(renglon);
+        continue;
+      }
+      for (let i = 0; i < renglon.length; i += largo) {
+        pedazos.push(renglon.slice(i, i + largo));
+      }
+    }
+  }
+
+  // Se vuelven a juntar los pedazos chicos hasta llenar un tramo.
+  const tramos = [];
+  let actual = "";
+  for (const pedazo of pedazos) {
+    if (actual && actual.length + pedazo.length + 2 > largo) {
+      tramos.push(actual);
+      actual = "";
+    }
+    actual = actual ? `${actual}\n\n${pedazo}` : pedazo;
+  }
+  if (actual) tramos.push(actual);
+  return tramos;
+}
+
+async function pedirTraduccion(texto, idioma, parte, total) {
+  const r = await fetch("/api/traducir", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ texto, idioma, parte, total }),
+  });
+  const datos = await r.json();
+  if (datos.error) throw new Error(datos.error);
+  return datos;
 }
 
 function nombreDeTomo(libro) {
@@ -58,7 +116,10 @@ export default function Pagina() {
   const [filtros, setFiltros] = useState(FILTROS_VACIOS);
   const [facetas, setFacetas] = useState(null);
   const [resultados, setResultados] = useState(null);
+  const [total, setTotal] = useState(0);
+  const [paginable, setPaginable] = useState(true);
   const [buscando, setBuscando] = useState(false);
+  const [trayendoMas, setTrayendoMas] = useState(false);
   const [error, setError] = useState(null);
   // <details open={...}> no alcanza: React lo vuelve a imponer en cada
   // re-render y el panel se cerraba solo mientras lo estabas usando.
@@ -92,17 +153,44 @@ export default function Pagina() {
         body: JSON.stringify({
           consulta: textoUsado,
           filtros: filtrosUsados,
-          limite: 20,
+          limite: POR_PAGINA,
         }),
       });
       const datos = await r.json();
       if (datos.error) throw new Error(datos.error);
       setResultados(datos.resultados || []);
+      setTotal(datos.total ?? (datos.resultados || []).length);
+      setPaginable(datos.paginable !== false);
     } catch (e) {
       setError({ texto: mensajeAmable(e.message || e), detalle: String(e.message || e) });
       setResultados(null);
+      setTotal(0);
     } finally {
       setBuscando(false);
+    }
+  }
+
+  /** Trae las siguientes y las agrega abajo, sin perder las que ya están. */
+  async function traerMas() {
+    setTrayendoMas(true);
+    try {
+      const r = await fetch("/api/buscar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          consulta,
+          filtros,
+          limite: POR_PAGINA,
+          desplazamiento: resultados.length,
+        }),
+      });
+      const datos = await r.json();
+      if (datos.error) throw new Error(datos.error);
+      setResultados((antes) => [...antes, ...(datos.resultados || [])]);
+    } catch (e) {
+      setError({ texto: mensajeAmable(e.message || e), detalle: String(e.message || e) });
+    } finally {
+      setTrayendoMas(false);
     }
   }
 
@@ -245,7 +333,10 @@ export default function Pagina() {
             {facetas?.error
               ? "No pude leer los filtros desde la base."
               : facetas
-              ? `${facetas.total} carta${facetas.total === 1 ? "" : "s"} en la base`
+              ? `${facetas.total} carta${facetas.total === 1 ? "" : "s"} en la base` +
+                (facetas.exactas === false
+                  ? " · los números de cada tema son aproximados"
+                  : "")
               : "Cargando filtros…"}
           </span>
           <button type="button" onClick={limpiar}>
@@ -260,6 +351,8 @@ export default function Pagina() {
         <p className="conteo">
           {resultados.length === 0
             ? "Ninguna carta coincide."
+            : total > resultados.length
+            ? `${total} cartas · mostrando las primeras ${resultados.length}`
             : `${resultados.length} carta${resultados.length === 1 ? "" : "s"}`}
         </p>
       )}
@@ -272,6 +365,23 @@ export default function Pagina() {
           alTocarTema={buscarTema}
         />
       ))}
+
+      {resultados !== null && resultados.length > 0 && total > resultados.length && (
+        <div className="traer-mas">
+          {paginable ? (
+            <button type="button" onClick={traerMas} disabled={trayendoMas}>
+              {trayendoMas
+                ? "Trayendo…"
+                : `Ver ${Math.min(POR_PAGINA, total - resultados.length)} más`}
+            </button>
+          ) : (
+            <p className="nota-chica">
+              Para ver las {total - resultados.length} restantes hay que correr
+              el SQL de los conteos en Supabase.
+            </p>
+          )}
+        </div>
+      )}
 
       {resultados === null && !error && (
         <div className="aviso">
@@ -294,6 +404,7 @@ function Resultado({ carta, libros, alTocarTema }) {
   const [idioma, setIdioma] = useState("es");
   const [traducciones, setTraducciones] = useState({});
   const [traduciendo, setTraduciendo] = useState(false);
+  const [avance, setAvance] = useState(null);
   const [fallo, setFallo] = useState(null);
 
   const libro = libros.find((l) => l.id === carta.libro_id);
@@ -313,17 +424,37 @@ function Resultado({ carta, libros, alTocarTema }) {
     if (traducciones[idioma]) return;
     setTraduciendo(true);
     setFallo(null);
+    setAvance(null);
+
+    const tramos = partirEnTramos(carta.texto);
+    const hechos = [];
+
     try {
-      const r = await fetch("/api/traducir", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ texto: carta.texto, idioma }),
-      });
-      const datos = await r.json();
-      if (datos.error) throw new Error(datos.error);
-      setTraducciones((t) => ({ ...t, [idioma]: datos.traduccion }));
+      for (let i = 0; i < tramos.length; i++) {
+        setAvance({ hecho: i, total: tramos.length });
+
+        // Si el modelo llena su cupo de salida, se parte ese tramo al medio y
+        // se reintenta, en vez de dejar media traducción haciéndose pasar por
+        // entera. Es lo que pasaba antes con las cartas largas.
+        let pendientes = [tramos[i]];
+        while (pendientes.length) {
+          const tramo = pendientes.shift();
+          const datos = await pedirTraduccion(tramo, idioma, i + 1, tramos.length);
+          if (datos.truncada && tramo.length > 800) {
+            const mitad = Math.floor(tramo.length / 2);
+            pendientes.unshift(tramo.slice(0, mitad), tramo.slice(mitad));
+            continue;
+          }
+          hechos.push(datos.traduccion);
+        }
+
+        // Se muestra lo que ya está traducido mientras siguen los demás.
+        setTraducciones((t) => ({ ...t, [idioma]: hechos.join("\n\n") }));
+      }
+      setAvance(null);
     } catch (e) {
       setFallo({ texto: mensajeAmable(e.message || e), detalle: String(e.message || e) });
+      setAvance(null);
     } finally {
       setTraduciendo(false);
     }
@@ -391,7 +522,9 @@ function Resultado({ carta, libros, alTocarTema }) {
 
         <button type="button" onClick={traducir} disabled={traduciendo}>
           {traduciendo
-            ? "Traduciendo…"
+            ? avance && avance.total > 1
+              ? `Traduciendo ${avance.hecho + 1} de ${avance.total}…`
+              : "Traduciendo…"
             : traduccion
             ? "Traducida ✓"
             : "Traducir entera"}
