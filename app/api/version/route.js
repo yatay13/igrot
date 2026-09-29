@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 // Tres veces seguidas estuvimos discutiendo si un arreglo estaba en Vercel o
 // no, mirando de refilón otras respuestas. Con esto se abre la dirección y se
 // lee la fecha: si es vieja, el despliegue no pasó, y no hay más que hablar.
-const PUBLICADO = "2026-09-29b · reintento por sobrecarga de Gemini (503)";
+const PUBLICADO = "2026-09-29c · traducciones guardadas, modelos lite primero";
 
 export async function GET() {
   return Response.json(
@@ -19,6 +19,8 @@ export async function GET() {
         conteos_exactos: true,
         paginado: true,
         total_por_suma_de_tomos: true,
+        traducciones_guardadas: true,
+        reintento_por_sobrecarga: true,
       },
     },
     { headers: { "Cache-Control": "no-store" } }
