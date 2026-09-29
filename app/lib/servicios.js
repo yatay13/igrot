@@ -188,7 +188,23 @@ function armarPrompt(texto, nombreIdioma, parte, total, insistir) {
  *  volvían cortadas a la mitad sin avisar. Ahora cada tramo entra holgado, y
  *  de paso cada pedido termina rápido: Vercel corta a los 60 segundos.
  */
+// Cuánto puede tardar todo el pedido, y cuánto una sola llamada a Gemini.
+//
+// Vercel corta la función a los 60 segundos y devuelve una página de error en
+// texto plano, no en JSON. La página hacía `res.json()` sobre eso y reventaba
+// con "Unexpected token 'A', "An error o"... is not valid JSON", que no le
+// dice nada a nadie. La causa de fondo era esta función: probaba hasta cuatro
+// modelos con dos intentos cada uno, y en el plan gratuito de Gemini una
+// llamada tarda entre 13 y 25 segundos. Ocho llamadas nunca iban a entrar.
+//
+// Ahora se corta sola antes que Vercel, y al cortarse devuelve JSON.
+const PRESUPUESTO_MS = 45000;
+const POR_LLAMADA_MS = 22000;
+
 export async function traducir(texto, idioma, apiKey, parte = 1, total = 1) {
+  const empezo = Date.now();
+  const restante = () => PRESUPUESTO_MS - (Date.now() - empezo);
+
   const { texto: candidatos } = await modelos(apiKey);
   const nombreIdioma = NOMBRE_DE_IDIOMA[idioma] || idioma;
   // Traducir al hebreo o al ídish sí devuelve letras hebreas: ahí el control
@@ -196,26 +212,41 @@ export async function traducir(texto, idioma, apiKey, parte = 1, total = 1) {
   const esperaHebreo = idioma === "he" || idioma === "yi";
 
   async function pedir(modelo, insistir) {
-    const r = await fetch(`${GEMINI}/models/${modelo}:generateContent?key=${apiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: armarPrompt(texto, nombreIdioma, parte, total, insistir) }] }],
-        generationConfig: { temperature: 0.3, maxOutputTokens: 8192 },
-      }),
-    });
-    if (!r.ok) return { error: `HTTP ${r.status}` };
-    const datos = await r.json();
-    const candidato = datos?.candidates?.[0];
-    const salida = (candidato?.content?.parts || [])
-      .map((p) => p.text || "").join("").trim();
-    if (!salida) return { error: "respuesta vacía" };
-    return { salida, truncada: candidato?.finishReason === "MAX_TOKENS" };
+    const margen = Math.min(POR_LLAMADA_MS, restante());
+    if (margen <= 1000) return { error: "sin tiempo" };
+    try {
+      const r = await fetch(`${GEMINI}/models/${modelo}:generateContent?key=${apiKey}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: armarPrompt(texto, nombreIdioma, parte, total, insistir) }] }],
+          generationConfig: { temperature: 0.3, maxOutputTokens: 8192 },
+        }),
+        signal: AbortSignal.timeout(margen),
+      });
+      if (!r.ok) return { error: `HTTP ${r.status}` };
+      const datos = await r.json();
+      const candidato = datos?.candidates?.[0];
+      const salida = (candidato?.content?.parts || [])
+        .map((p) => p.text || "").join("").trim();
+      if (!salida) return { error: "respuesta vacía" };
+      return { salida, truncada: candidato?.finishReason === "MAX_TOKENS" };
+    } catch (e) {
+      // AbortSignal.timeout lanza TimeoutError; cualquier otra cosa es de red
+      const porTiempo = e?.name === "TimeoutError" || e?.name === "AbortError";
+      return { error: porTiempo ? "tardó demasiado" : String(e?.message || e) };
+    }
   }
 
   let ultimoError = "sin modelos de texto";
   for (const modelo of candidatos.slice(0, 4)) {
     for (const insistir of [false, true]) {
+      if (restante() <= 1000) {
+        throw new Error(
+          `no llegué a traducir a tiempo (último intento: ${ultimoError}). ` +
+          `Probá de nuevo: los modelos gratuitos de Gemini a veces tardan mucho.`
+        );
+      }
       const { salida, truncada, error } = await pedir(modelo, insistir);
       if (error) { ultimoError = `${modelo}: ${error}`; break; }
 
