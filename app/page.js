@@ -40,7 +40,35 @@ function mensajeAmable(crudo) {
     return "Faltan las variables SUPABASE_URL y SUPABASE_KEY en Vercel.";
   if (/Supabase 4|Supabase 5/i.test(t))
     return "La base no respondió bien. Fijate que el esquema SQL esté corrido y la clave sea la anon.";
+  if (/a tiempo|tardó demasiado|tard[oó]/i.test(t))
+    return "Gemini tardó más de lo que el servidor puede esperar. Probá de nuevo: " +
+      "los modelos gratuitos van lentos a ratos.";
+  if (/el servidor cortó/i.test(t)) return t;
   return t;
+}
+
+/** Lee la respuesta con cuidado, porque no siempre viene JSON.
+ *
+ *  Cuando una función de Vercel pasa su límite de tiempo, la respuesta que
+ *  llega no es la nuestra: es una página de error en texto plano que empieza
+ *  con "An error occurred...". Hacerle `.json()` tira
+ *  "Unexpected token 'A', "An error o"... is not valid JSON", que no le
+ *  explica nada a nadie. Acá se lee como texto y se traduce a algo legible.
+ */
+async function leerJson(r) {
+  const cuerpo = await r.text();
+  try {
+    return JSON.parse(cuerpo);
+  } catch {
+    const pista = cuerpo.slice(0, 120).replace(/\s+/g, " ").trim();
+    if (r.status === 504 || /an error occurred|timeout|FUNCTION_INVOCATION/i.test(cuerpo)) {
+      throw new Error(
+        "el servidor cortó el pedido por tiempo. Con cartas largas pasa: " +
+        "probá de nuevo, o traducí la carta por partes."
+      );
+    }
+    throw new Error(`el servidor respondió algo que no es JSON (${r.status}): ${pista}`);
+  }
 }
 
 const LARGO_DE_TRAMO = 2500;
@@ -93,7 +121,7 @@ async function pedirTraduccion(texto, idioma, parte, total) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ texto, idioma, parte, total }),
   });
-  const datos = await r.json();
+  const datos = await leerJson(r);
   if (datos.error) throw new Error(datos.error);
   return datos;
 }
@@ -128,7 +156,7 @@ export default function Pagina() {
 
   useEffect(() => {
     fetch("/api/facetas")
-      .then((r) => r.json())
+      .then(leerJson)
       .then((d) => setFacetas(d.error ? { error: d.error } : d))
       .catch((e) => setFacetas({ error: String(e) }));
   }, []);
@@ -156,7 +184,7 @@ export default function Pagina() {
           limite: POR_PAGINA,
         }),
       });
-      const datos = await r.json();
+      const datos = await leerJson(r);
       if (datos.error) throw new Error(datos.error);
       setResultados(datos.resultados || []);
       setTotal(datos.total ?? (datos.resultados || []).length);
@@ -184,7 +212,7 @@ export default function Pagina() {
           desplazamiento: resultados.length,
         }),
       });
-      const datos = await r.json();
+      const datos = await leerJson(r);
       if (datos.error) throw new Error(datos.error);
       setResultados((antes) => [...antes, ...(datos.resultados || [])]);
     } catch (e) {
@@ -414,7 +442,7 @@ function Resultado({ carta, libros, alTocarTema }) {
     setAbierta(nuevo);
     if (nuevo && !detalle) {
       fetch(`/api/carta?id=${encodeURIComponent(carta.id)}`)
-        .then((r) => r.json())
+        .then(leerJson)
         .then((d) => d.carta && setDetalle(d.carta))
         .catch(() => {});
     }
