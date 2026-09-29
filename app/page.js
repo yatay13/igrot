@@ -31,6 +31,11 @@ function mensajeAmable(crudo) {
   const t = String(crudo || "");
   if (/429|quota|RESOURCE_EXHAUSTED/i.test(t))
     return "Se agotó la cuota gratis de Gemini por hoy. Probá de nuevo más tarde.";
+  // 503 es "estoy sobrecargado", no "algo está mal": se arregla solo
+  if (/HTTP 50[0234]|UNAVAILABLE|overloaded/i.test(t))
+    return "Los modelos gratuitos de Gemini están saturados en este momento " +
+      "(error 503). No es un problema de tu clave ni de la carta: esperá un " +
+      "minuto y probá de nuevo.";
   if (/403|401|API key|API_KEY/i.test(t))
     return "La clave de Gemini no está funcionando. Revisala en las variables de entorno de Vercel.";
   if (/hebreo sin traducir/i.test(t))
