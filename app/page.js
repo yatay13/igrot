@@ -120,11 +120,20 @@ function partirEnTramos(texto, largo = LARGO_DE_TRAMO) {
   return tramos;
 }
 
-async function pedirTraduccion(texto, idioma, parte, total) {
+/** Pide un tramo traducido.
+ *
+ *  `cartaId` es lo que permite guardar la traducción para la próxima vez. Va
+ *  en null cuando el tramo es un PEDAZO de otro tramo —eso pasa cuando el
+ *  modelo llena su cupo y hay que partirlo al medio— porque los dos pedazos
+ *  tendrían el mismo número de tramo y el segundo pisaría al primero en la
+ *  base. Después, al leerla, volvería media carta haciéndose pasar por
+ *  entera, que es exactamente el problema que arreglamos hace unos días.
+ */
+async function pedirTraduccion(texto, idioma, parte, total, cartaId = null) {
   const r = await fetch("/api/traducir", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ texto, idioma, parte, total }),
+    body: JSON.stringify({ texto, idioma, parte, total, cartaId }),
   });
   const datos = await leerJson(r);
   if (datos.error) throw new Error(datos.error);
@@ -470,12 +479,16 @@ function Resultado({ carta, libros, alTocarTema }) {
         // se reintenta, en vez de dejar media traducción haciéndose pasar por
         // entera. Es lo que pasaba antes con las cartas largas.
         let pendientes = [tramos[i]];
+        let entero = true;          // ¿sigue siendo el tramo original?
         while (pendientes.length) {
           const tramo = pendientes.shift();
-          const datos = await pedirTraduccion(tramo, idioma, i + 1, tramos.length);
+          const datos = await pedirTraduccion(
+            tramo, idioma, i + 1, tramos.length, entero ? carta.id : null
+          );
           if (datos.truncada && tramo.length > 800) {
             const mitad = Math.floor(tramo.length / 2);
             pendientes.unshift(tramo.slice(0, mitad), tramo.slice(mitad));
+            entero = false;
             continue;
           }
           hechos.push(datos.traduccion);
