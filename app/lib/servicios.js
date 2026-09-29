@@ -224,7 +224,7 @@ export async function traducir(texto, idioma, apiKey, parte = 1, total = 1) {
         }),
         signal: AbortSignal.timeout(margen),
       });
-      if (!r.ok) return { error: `HTTP ${r.status}` };
+      if (!r.ok) return { error: `HTTP ${r.status}`, estado: r.status };
       const datos = await r.json();
       const candidato = datos?.candidates?.[0];
       const salida = (candidato?.content?.parts || [])
@@ -238,27 +238,72 @@ export async function traducir(texto, idioma, apiKey, parte = 1, total = 1) {
     }
   }
 
-  let ultimoError = "sin modelos de texto";
+  // Qué significa cada fallo, que no es lo mismo:
+  //
+  //   503, 500, 502, 504  el modelo está sobrecargado ahora mismo. Google los
+  //                       devuelve seguido en el plan gratuito y se arreglan
+  //                       solos en segundos: hay que esperar y reintentar el
+  //                       MISMO modelo. Antes yo lo daba por perdido y pasaba
+  //                       al siguiente, que suele estar igual de ocupado.
+  //   429                 se acabó la cuota. Reintentar no ayuda.
+  //   400, 401, 403       la clave o el pedido están mal. Cambiar de modelo
+  //                       tampoco ayuda: se corta acá.
+  const PASAJERO = new Set([500, 502, 503, 504]);
+  const SIN_REMEDIO = new Set([400, 401, 403]);
+  const ESPERA_MS = 1500;
+
+  // qué dijo cada modelo, para el aviso. Sin repetir el mismo renglón tres
+  // veces seguidas cuando un modelo falla en sus tres intentos: el mensaje
+  // termina en pantalla y tiene que poder leerse.
+  const diario = [];
+  const anotar = (linea) => {
+    if (diario[diario.length - 1] !== linea) diario.push(linea);
+  };
   for (const modelo of candidatos.slice(0, 4)) {
-    for (const insistir of [false, true]) {
+    // Los dos motivos para repetir con el mismo modelo son distintos y se
+    // cuentan aparte. Si comparten contador, un reintento por sobrecarga
+    // termina mandando el prompt de "insistí, me devolviste el hebreo", que
+    // no tiene nada que ver.
+    let reintentos = 0;                  // por sobrecarga
+    let ecos = 0;                        // por devolver el hebreo
+    let insistir = false;
+
+    while (true) {
       if (restante() <= 1000) {
         throw new Error(
-          `no llegué a traducir a tiempo (último intento: ${ultimoError}). ` +
+          `no llegué a traducir a tiempo (${diario.join(" · ") || "sin intentos"}). ` +
           `Probá de nuevo: los modelos gratuitos de Gemini a veces tardan mucho.`
         );
       }
-      const { salida, truncada, error } = await pedir(modelo, insistir);
-      if (error) { ultimoError = `${modelo}: ${error}`; break; }
+
+      const { salida, truncada, error, estado } = await pedir(modelo, insistir);
+
+      if (error) {
+        anotar(`${modelo}: ${error}`);
+        if (SIN_REMEDIO.has(estado)) {
+          throw new Error(`no pude traducir (${modelo}: HTTP ${estado}). ` +
+                          `Revisá la clave de Gemini.`);
+        }
+        // Sobrecarga: se espera un momento y se reintenta el mismo modelo,
+        // mientras quede presupuesto y no se haya intentado ya dos veces.
+        if (PASAJERO.has(estado) && reintentos < 2 && restante() > ESPERA_MS + 3000) {
+          reintentos++;
+          await new Promise((listo) => setTimeout(listo, ESPERA_MS * reintentos));
+          continue;
+        }
+        break;                            // al modelo siguiente
+      }
 
       // Si volvió en hebreo, el modelo copió en vez de traducir. Se insiste
       // una vez y, si sigue igual, se pasa al modelo siguiente. Mostrarlo
       // sería peor que fallar: parece una traducción y no lo es.
       if (!esperaHebreo && proporcionHebrea(salida) > 0.5) {
-        ultimoError = `${modelo}: devolvió el hebreo sin traducir`;
-        continue;
+        anotar(`${modelo}: devolvió el hebreo sin traducir`);
+        if (ecos === 0) { ecos++; insistir = true; continue; }
+        break;
       }
       return { traduccion: salida, truncada };
     }
   }
-  throw new Error(`no pude traducir (${ultimoError})`);
+  throw new Error(`no pude traducir (${diario.join(" · ") || "sin modelos de texto"})`);
 }
