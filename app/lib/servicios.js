@@ -41,12 +41,23 @@ async function modelos(apiKey) {
       .filter(extra)
       .sort(porGeneracion);
 
+  // El orden importa más de lo que parece. Ordenados por generación, arriba
+  // quedan siempre los modelos más nuevos, que son los más pedidos y los que
+  // devuelven 503 o tardan una eternidad. Una corrida real de Ariel probó
+  // gemini-3.8, 3.7, 3.6 y 3.5 flash: dos dieron 503 y dos se pasaron de
+  // tiempo, y nunca llegó a los `lite`, que él mismo había medido como los
+  // más rápidos (13 s contra 25 s).
+  //
+  // Para traducir no hace falta el modelo más nuevo: hace falta uno que
+  // conteste. Así que primero los `lite`, después el resto de los flash, y al
+  // final los grandes.
+  const generaContenido = (extra) => utiles("generateContent", extra);
   cacheDeModelos = {
     embeddings: utiles("embedContent"),
-    // para traducir preferimos un flash: es barato y alcanza de sobra
     texto: [
-      ...utiles("generateContent", (n) => n.includes("flash")),
-      ...utiles("generateContent", (n) => !n.includes("flash")),
+      ...generaContenido((n) => n.includes("lite")),
+      ...generaContenido((n) => n.includes("flash") && !n.includes("lite")),
+      ...generaContenido((n) => !n.includes("flash") && !n.includes("lite")),
     ],
   };
   return cacheDeModelos;
@@ -126,6 +137,44 @@ export async function tabla(nombre, parametros = {}, conTotal = false) {
   const despues = rango.split("/")[1];
   const total = despues && despues !== "*" ? Number(despues) : filas.length;
   return { filas, total };
+}
+
+/** Guarda una fila, y si ya estaba la reemplaza.
+ *
+ *  `alChocar` son las columnas que forman la clave; PostgREST necesita que se
+ *  las nombre para saber qué hacer cuando la fila ya existe.
+ */
+export async function guardar(nombre, fila, alChocar = null) {
+  const url = process.env.SUPABASE_URL;
+  const clave = process.env.SUPABASE_KEY;
+  if (!url || !clave) throw new Error("faltan SUPABASE_URL o SUPABASE_KEY");
+
+  const query = alChocar ? `?on_conflict=${alChocar}` : "";
+  const r = await fetch(`${url.replace(/\/$/, "")}/rest/v1/${nombre}${query}`, {
+    method: "POST",
+    headers: {
+      apikey: clave,
+      Authorization: `Bearer ${clave}`,
+      "Content-Type": "application/json",
+      Prefer: alChocar ? "resolution=merge-duplicates" : "return=minimal",
+    },
+    body: JSON.stringify(fila),
+  });
+  if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 300)}`);
+}
+
+/** La traducción de un tramo, si ya la habíamos hecho alguna vez. */
+export async function traduccionGuardada(cartaId, idioma, parte, total) {
+  if (!cartaId) return null;
+  const filas = await tabla("traducciones", {
+    select: "texto",
+    carta_id: `eq.${cartaId}`,
+    idioma: `eq.${idioma}`,
+    parte: `eq.${parte}`,
+    total: `eq.${total}`,
+    limit: "1",
+  });
+  return filas?.[0]?.texto || null;
 }
 
 const NOMBRE_DE_IDIOMA = {
@@ -302,7 +351,7 @@ export async function traducir(texto, idioma, apiKey, parte = 1, total = 1) {
         if (ecos === 0) { ecos++; insistir = true; continue; }
         break;
       }
-      return { traduccion: salida, truncada };
+      return { traduccion: salida, truncada, modelo };
     }
   }
   throw new Error(`no pude traducir (${diario.join(" · ") || "sin modelos de texto"})`);
