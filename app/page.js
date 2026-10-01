@@ -163,6 +163,9 @@ export default function Pagina() {
   const [buscando, setBuscando] = useState(false);
   const [trayendoMas, setTrayendoMas] = useState(false);
   const [error, setError] = useState(null);
+  // Aviso que NO es un error: la búsqueda funcionó, nada más que degradada
+  // (por ejemplo sin la parte semántica porque se agotó la cuota de Gemini).
+  const [aviso, setAviso] = useState(null);
   // <details open={...}> no alcanza: React lo vuelve a imponer en cada
   // re-render y el panel se cerraba solo mientras lo estabas usando.
   const [filtrosAbiertos, setFiltrosAbiertos] = useState(false);
@@ -188,6 +191,7 @@ export default function Pagina() {
     }
     setBuscando(true);
     setError(null);
+    setAviso(null);
     try {
       const r = await fetch("/api/buscar", {
         method: "POST",
@@ -203,6 +207,7 @@ export default function Pagina() {
       setResultados(datos.resultados || []);
       setTotal(datos.total ?? (datos.resultados || []).length);
       setPaginable(datos.paginable !== false);
+      setAviso(datos.aviso || null);
     } catch (e) {
       setError({ texto: mensajeAmable(e.message || e), detalle: String(e.message || e) });
       setResultados(null);
@@ -389,6 +394,8 @@ export default function Pagina() {
 
       {error && <Problema {...error} />}
 
+      {aviso && !error && <p className="aviso">{aviso}</p>}
+
       {resultados !== null && !error && (
         <p className="conteo">
           {resultados.length === 0
@@ -445,6 +452,12 @@ function Resultado({ carta, libros, alTocarTema }) {
   const [detalle, setDetalle] = useState(null);
   const [idioma, setIdioma] = useState("es");
   const [traducciones, setTraducciones] = useState({});
+  // Qué idiomas quedaron COMPLETOS. Sin esto, una traducción cortada a mitad
+  // de camino dejaba el botón muerto: `traducir` salía en la primera línea
+  // porque ya había algo guardado, y no había manera de retomar sin recargar
+  // la página. Los tramos ya hechos quedan en la base, así que retomar es
+  // barato: los lee de ahí y sigue por el que falta.
+  const [completas, setCompletas] = useState({});
   const [traduciendo, setTraduciendo] = useState(false);
   const [avance, setAvance] = useState(null);
   const [fallo, setFallo] = useState(null);
@@ -463,7 +476,7 @@ function Resultado({ carta, libros, alTocarTema }) {
   }
 
   async function traducir() {
-    if (traducciones[idioma]) return;
+    if (completas[idioma]) return;
     setTraduciendo(true);
     setFallo(null);
     setAvance(null);
@@ -497,6 +510,7 @@ function Resultado({ carta, libros, alTocarTema }) {
         // Se muestra lo que ya está traducido mientras siguen los demás.
         setTraducciones((t) => ({ ...t, [idioma]: hechos.join("\n\n") }));
       }
+      setCompletas((c) => ({ ...c, [idioma]: true }));
       setAvance(null);
     } catch (e) {
       setFallo({ texto: mensajeAmable(e.message || e), detalle: String(e.message || e) });
@@ -571,8 +585,10 @@ function Resultado({ carta, libros, alTocarTema }) {
             ? avance && avance.total > 1
               ? `Traduciendo ${avance.hecho + 1} de ${avance.total}…`
               : "Traduciendo…"
-            : traduccion
+            : completas[idioma]
             ? "Traducida ✓"
+            : traduccion
+            ? "Seguir traduciendo"
             : "Traducir entera"}
         </button>
       </div>
