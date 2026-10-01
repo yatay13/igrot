@@ -19,9 +19,27 @@ export async function POST(pedido) {
 
     // Con consulta escrita: búsqueda híbrida (vector + texto completo).
     // Sólo con filtros: el vector no aporta nada y se ahorra la llamada.
+    //
+    // Y si el vector NO SE PUEDE conseguir, se busca igual, sólo por texto.
+    // Antes esto tiraba abajo toda la búsqueda escrita: `vectorDeConsulta`
+    // llama a Gemini, y con la cuota diaria agotada devolvía 429, la excepción
+    // subía hasta acá y el sitio contestaba 500. Los filtros seguían andando
+    // porque no pasan por Gemini, y de afuera parecía que "escribir estaba
+    // roto". La parte semántica es un extra: la búsqueda por texto completo no
+    // tiene por qué depender de ella.
     let vector = null;
+    let aviso = null;
     if (texto) {
-      vector = await vectorDeConsulta(texto, process.env.GEMINI_API_KEY);
+      try {
+        vector = await vectorDeConsulta(texto, process.env.GEMINI_API_KEY);
+      } catch (e) {
+        vector = null;
+        aviso =
+          "Ahora mismo estoy buscando sólo por las palabras exactas: " +
+          "la búsqueda por significado no está disponible " +
+          "(seguramente se agotó la cuota diaria de Gemini). " +
+          "Vuelve sola cuando la cuota se renueve.";
+      }
     }
 
     const argumentos = {
@@ -55,7 +73,7 @@ export async function POST(pedido) {
       ? Number(resultados[0].total_coincidencias) || resultados.length
       : 0;
 
-    return Response.json({ resultados, total, paginable });
+    return Response.json({ resultados, total, paginable, aviso });
   } catch (e) {
     return Response.json({ error: String(e.message || e) }, { status: 500 });
   }
