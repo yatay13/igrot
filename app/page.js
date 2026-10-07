@@ -11,6 +11,49 @@ const IDIOMAS = [
   { valor: "yi", nombre: "Ídish" },
 ];
 
+// Cuántas cartas tiene que tener un tema para aparecer entre los frecuentes.
+const TEMAS_FRECUENTES_DESDE = 10;
+
+/** Los temas en dos grupos: los que sirven para filtrar y los muy específicos.
+ *
+ *  Después de cargar las 3.345 cartas sueltas hay 196 temas, y 126 de ellos
+ *  tienen entre una y nueve cartas: `operación entebbe`, `Safed`, `psicología`.
+ *  No están mal —son específicos de verdad— pero un desplegable de 196
+ *  opciones no se puede usar, menos en un teléfono.
+ *
+ *  No se esconde ninguno: se agrupan. Los frecuentes quedan arriba, que es lo
+ *  que uno busca el 95% de las veces, y los demás siguen ahí, a un scroll de
+ *  distancia y con su encabezado. Esconder información correcta sería peor que
+ *  ordenarla.
+ *
+ *  `elegido` se agrega aunque no esté en la lista: si alguien tiene guardado un
+ *  enlace con un tema que después se juntó con otro —acabamos de juntar 30— el
+ *  filtro mostraría una casilla en blanco sin decir por qué.
+ */
+function agruparTemas(temas, elegido = "", desde = TEMAS_FRECUENTES_DESDE) {
+  const lista = (temas || []).filter((t) => t && t.valor);
+  const estaElegido = lista.some((t) => t.valor === elegido);
+  const completa =
+    elegido && !estaElegido
+      ? [...lista, { valor: elegido, n: null, suelto: true }]
+      : lista;
+
+  const frecuentes = completa.filter((t) => (t.n || 0) >= desde);
+  const especificos = completa.filter((t) => (t.n || 0) < desde);
+
+  if (!completa.length) return [];
+  if (!frecuentes.length || !especificos.length) {
+    return [{ etiqueta: null, temas: completa }];
+  }
+  return [
+    { etiqueta: "Temas más frecuentes", temas: frecuentes },
+    {
+      etiqueta: `Más específicos (menos de ${desde} cartas)`,
+      temas: especificos,
+    },
+  ];
+}
+
 const MESES = [
   "enero", "febrero", "marzo", "abril", "mayo", "junio",
   "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
@@ -328,11 +371,25 @@ export default function Pagina() {
               onChange={(e) => cambiar("tema", e.target.value)}
             >
               <option value="">todos</option>
-              {(facetas?.temas || []).map((t) => (
-                <option key={t.valor} value={t.valor}>
-                  {t.valor} ({t.n})
-                </option>
-              ))}
+              {agruparTemas(facetas?.temas, filtros.tema).map((g, i) =>
+                g.etiqueta ? (
+                  <optgroup key={g.etiqueta} label={g.etiqueta}>
+                    {g.temas.map((t) => (
+                      <option key={t.valor} value={t.valor}>
+                        {t.valor}
+                        {t.n == null ? "" : ` (${t.n})`}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : (
+                  g.temas.map((t) => (
+                    <option key={t.valor} value={t.valor}>
+                      {t.valor}
+                      {t.n == null ? "" : ` (${t.n})`}
+                    </option>
+                  ))
+                )
+              )}
             </select>
           </div>
 
