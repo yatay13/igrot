@@ -342,7 +342,7 @@ export default function Pagina() {
         onToggle={(e) => setFiltrosAbiertos(e.currentTarget.open)}
       >
         <summary>
-          Filtros por tomo, tema, festividad y año {hayFiltros ? "· activos" : ""}
+          Filtros por tomo, tema, fecha/festividad y año {hayFiltros ? "· activos" : ""}
         </summary>
 
         <div className="rejilla">
@@ -394,7 +394,7 @@ export default function Pagina() {
           </div>
 
           <div className="campo">
-            <label htmlFor="f-fest">Festividad</label>
+            <label htmlFor="f-fest">Fechas/Festividades</label>
             <select
               id="f-fest"
               value={filtros.festividad}
