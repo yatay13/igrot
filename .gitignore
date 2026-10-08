@@ -1,0 +1,24 @@
+# dependencias y compilados
+node_modules
+.next
+out
+build
+dist
+
+# LAS CLAVES. Esto es lo que importa.
+.env
+.env.local
+.env.*.local
+
+# Vercel
+.vercel
+
+# registros
+*.log
+
+# sistema operativo y editores
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea
+.vscode
