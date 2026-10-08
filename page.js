@@ -11,6 +11,49 @@ const IDIOMAS = [
   { valor: "yi", nombre: "Ídish" },
 ];
 
+// Cuántas cartas tiene que tener un tema para aparecer entre los frecuentes.
+const TEMAS_FRECUENTES_DESDE = 10;
+
+/** Los temas en dos grupos: los que sirven para filtrar y los muy específicos.
+ *
+ *  Después de cargar las 3.345 cartas sueltas hay 196 temas, y 126 de ellos
+ *  tienen entre una y nueve cartas: `operación entebbe`, `Safed`, `psicología`.
+ *  No están mal —son específicos de verdad— pero un desplegable de 196
+ *  opciones no se puede usar, menos en un teléfono.
+ *
+ *  No se esconde ninguno: se agrupan. Los frecuentes quedan arriba, que es lo
+ *  que uno busca el 95% de las veces, y los demás siguen ahí, a un scroll de
+ *  distancia y con su encabezado. Esconder información correcta sería peor que
+ *  ordenarla.
+ *
+ *  `elegido` se agrega aunque no esté en la lista: si alguien tiene guardado un
+ *  enlace con un tema que después se juntó con otro —acabamos de juntar 30— el
+ *  filtro mostraría una casilla en blanco sin decir por qué.
+ */
+function agruparTemas(temas, elegido = "", desde = TEMAS_FRECUENTES_DESDE) {
+  const lista = (temas || []).filter((t) => t && t.valor);
+  const estaElegido = lista.some((t) => t.valor === elegido);
+  const completa =
+    elegido && !estaElegido
+      ? [...lista, { valor: elegido, n: null, suelto: true }]
+      : lista;
+
+  const frecuentes = completa.filter((t) => (t.n || 0) >= desde);
+  const especificos = completa.filter((t) => (t.n || 0) < desde);
+
+  if (!completa.length) return [];
+  if (!frecuentes.length || !especificos.length) {
+    return [{ etiqueta: null, temas: completa }];
+  }
+  return [
+    { etiqueta: "Temas más frecuentes", temas: frecuentes },
+    {
+      etiqueta: `Más específicos (menos de ${desde} cartas)`,
+      temas: especificos,
+    },
+  ];
+}
+
 const MESES = [
   "enero", "febrero", "marzo", "abril", "mayo", "junio",
   "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
@@ -31,6 +74,11 @@ function mensajeAmable(crudo) {
   const t = String(crudo || "");
   if (/429|quota|RESOURCE_EXHAUSTED/i.test(t))
     return "Se agotó la cuota gratis de Gemini por hoy. Probá de nuevo más tarde.";
+  // 503 es "estoy sobrecargado", no "algo está mal": se arregla solo
+  if (/HTTP 50[0234]|UNAVAILABLE|overloaded/i.test(t))
+    return "Los modelos gratuitos de Gemini están saturados en este momento " +
+      "(error 503). No es un problema de tu clave ni de la carta: esperá un " +
+      "minuto y probá de nuevo.";
   if (/403|401|API key|API_KEY/i.test(t))
     return "La clave de Gemini no está funcionando. Revisala en las variables de entorno de Vercel.";
   if (/hebreo sin traducir/i.test(t))
@@ -40,7 +88,35 @@ function mensajeAmable(crudo) {
     return "Faltan las variables SUPABASE_URL y SUPABASE_KEY en Vercel.";
   if (/Supabase 4|Supabase 5/i.test(t))
     return "La base no respondió bien. Fijate que el esquema SQL esté corrido y la clave sea la anon.";
+  if (/a tiempo|tardó demasiado|tard[oó]/i.test(t))
+    return "Gemini tardó más de lo que el servidor puede esperar. Probá de nuevo: " +
+      "los modelos gratuitos van lentos a ratos.";
+  if (/el servidor cortó/i.test(t)) return t;
   return t;
+}
+
+/** Lee la respuesta con cuidado, porque no siempre viene JSON.
+ *
+ *  Cuando una función de Vercel pasa su límite de tiempo, la respuesta que
+ *  llega no es la nuestra: es una página de error en texto plano que empieza
+ *  con "An error occurred...". Hacerle `.json()` tira
+ *  "Unexpected token 'A', "An error o"... is not valid JSON", que no le
+ *  explica nada a nadie. Acá se lee como texto y se traduce a algo legible.
+ */
+async function leerJson(r) {
+  const cuerpo = await r.text();
+  try {
+    return JSON.parse(cuerpo);
+  } catch {
+    const pista = cuerpo.slice(0, 120).replace(/\s+/g, " ").trim();
+    if (r.status === 504 || /an error occurred|timeout|FUNCTION_INVOCATION/i.test(cuerpo)) {
+      throw new Error(
+        "el servidor cortó el pedido por tiempo. Con cartas largas pasa: " +
+        "probá de nuevo, o traducí la carta por partes."
+      );
+    }
+    throw new Error(`el servidor respondió algo que no es JSON (${r.status}): ${pista}`);
+  }
 }
 
 const LARGO_DE_TRAMO = 2500;
@@ -87,13 +163,26 @@ function partirEnTramos(texto, largo = LARGO_DE_TRAMO) {
   return tramos;
 }
 
-async function pedirTraduccion(texto, idioma, parte, total) {
+/** Pide un tramo traducido.
+ *
+ *  `cartaId` va SIEMPRE: el servidor lo usa para leer el texto de la carta en
+ *  la base y comprobar que el tramo sea de verdad un pedazo de ella. Sin eso,
+ *  cualquiera podía mandar un texto inventado con el id de una carta real y
+ *  dejarlo guardado como su traducción.
+ *
+ *  `guardar` es lo que antes se decía mandando `cartaId: null`: va en false
+ *  cuando el tramo es un PEDAZO de otro tramo —pasa cuando el modelo llena su
+ *  cupo y hay que partirlo al medio— porque los dos pedazos tendrían el mismo
+ *  número de tramo y el segundo pisaría al primero en la base. Después, al
+ *  leerla, volvería media carta haciéndose pasar por entera.
+ */
+async function pedirTraduccion(texto, idioma, parte, total, cartaId, guardar = true) {
   const r = await fetch("/api/traducir", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ texto, idioma, parte, total }),
+    body: JSON.stringify({ texto, idioma, parte, total, cartaId, guardar }),
   });
-  const datos = await r.json();
+  const datos = await leerJson(r);
   if (datos.error) throw new Error(datos.error);
   return datos;
 }
@@ -121,6 +210,9 @@ export default function Pagina() {
   const [buscando, setBuscando] = useState(false);
   const [trayendoMas, setTrayendoMas] = useState(false);
   const [error, setError] = useState(null);
+  // Aviso que NO es un error: la búsqueda funcionó, nada más que degradada
+  // (por ejemplo sin la parte semántica porque se agotó la cuota de Gemini).
+  const [aviso, setAviso] = useState(null);
   // <details open={...}> no alcanza: React lo vuelve a imponer en cada
   // re-render y el panel se cerraba solo mientras lo estabas usando.
   const [filtrosAbiertos, setFiltrosAbiertos] = useState(false);
@@ -128,7 +220,7 @@ export default function Pagina() {
 
   useEffect(() => {
     fetch("/api/facetas")
-      .then((r) => r.json())
+      .then(leerJson)
       .then((d) => setFacetas(d.error ? { error: d.error } : d))
       .catch((e) => setFacetas({ error: String(e) }));
   }, []);
@@ -146,6 +238,7 @@ export default function Pagina() {
     }
     setBuscando(true);
     setError(null);
+    setAviso(null);
     try {
       const r = await fetch("/api/buscar", {
         method: "POST",
@@ -156,11 +249,12 @@ export default function Pagina() {
           limite: POR_PAGINA,
         }),
       });
-      const datos = await r.json();
+      const datos = await leerJson(r);
       if (datos.error) throw new Error(datos.error);
       setResultados(datos.resultados || []);
       setTotal(datos.total ?? (datos.resultados || []).length);
       setPaginable(datos.paginable !== false);
+      setAviso(datos.aviso || null);
     } catch (e) {
       setError({ texto: mensajeAmable(e.message || e), detalle: String(e.message || e) });
       setResultados(null);
@@ -184,7 +278,7 @@ export default function Pagina() {
           desplazamiento: resultados.length,
         }),
       });
-      const datos = await r.json();
+      const datos = await leerJson(r);
       if (datos.error) throw new Error(datos.error);
       setResultados((antes) => [...antes, ...(datos.resultados || [])]);
     } catch (e) {
@@ -252,7 +346,7 @@ export default function Pagina() {
         onToggle={(e) => setFiltrosAbiertos(e.currentTarget.open)}
       >
         <summary>
-          Filtros por tomo, tema, festividad y año {hayFiltros ? "· activos" : ""}
+          Filtros por tomo, tema, fecha/festividad y año {hayFiltros ? "· activos" : ""}
         </summary>
 
         <div className="rejilla">
@@ -281,16 +375,30 @@ export default function Pagina() {
               onChange={(e) => cambiar("tema", e.target.value)}
             >
               <option value="">todos</option>
-              {(facetas?.temas || []).map((t) => (
-                <option key={t.valor} value={t.valor}>
-                  {t.valor} ({t.n})
-                </option>
-              ))}
+              {agruparTemas(facetas?.temas, filtros.tema).map((g, i) =>
+                g.etiqueta ? (
+                  <optgroup key={g.etiqueta} label={g.etiqueta}>
+                    {g.temas.map((t) => (
+                      <option key={t.valor} value={t.valor}>
+                        {t.valor}
+                        {t.n == null ? "" : ` (${t.n})`}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : (
+                  g.temas.map((t) => (
+                    <option key={t.valor} value={t.valor}>
+                      {t.valor}
+                      {t.n == null ? "" : ` (${t.n})`}
+                    </option>
+                  ))
+                )
+              )}
             </select>
           </div>
 
           <div className="campo">
-            <label htmlFor="f-fest">Festividad</label>
+            <label htmlFor="f-fest">Fechas/Festividades</label>
             <select
               id="f-fest"
               value={filtros.festividad}
@@ -345,7 +453,10 @@ export default function Pagina() {
         </div>
       </details>
 
+      <main id="resultados">
       {error && <Problema {...error} />}
+
+      {aviso && !error && <p className="aviso">{aviso}</p>}
 
       {resultados !== null && !error && (
         <p className="conteo">
@@ -389,6 +500,7 @@ export default function Pagina() {
           de noche», o abrí los filtros y elegí un tomo o un año.
         </div>
       )}
+      </main>
 
       <footer className="pie">
         Los textos son el OCR de los tomos originales: pueden tener errores de
@@ -403,6 +515,12 @@ function Resultado({ carta, libros, alTocarTema }) {
   const [detalle, setDetalle] = useState(null);
   const [idioma, setIdioma] = useState("es");
   const [traducciones, setTraducciones] = useState({});
+  // Qué idiomas quedaron COMPLETOS. Sin esto, una traducción cortada a mitad
+  // de camino dejaba el botón muerto: `traducir` salía en la primera línea
+  // porque ya había algo guardado, y no había manera de retomar sin recargar
+  // la página. Los tramos ya hechos quedan en la base, así que retomar es
+  // barato: los lee de ahí y sigue por el que falta.
+  const [completas, setCompletas] = useState({});
   const [traduciendo, setTraduciendo] = useState(false);
   const [avance, setAvance] = useState(null);
   const [fallo, setFallo] = useState(null);
@@ -414,14 +532,14 @@ function Resultado({ carta, libros, alTocarTema }) {
     setAbierta(nuevo);
     if (nuevo && !detalle) {
       fetch(`/api/carta?id=${encodeURIComponent(carta.id)}`)
-        .then((r) => r.json())
+        .then(leerJson)
         .then((d) => d.carta && setDetalle(d.carta))
         .catch(() => {});
     }
   }
 
   async function traducir() {
-    if (traducciones[idioma]) return;
+    if (completas[idioma]) return;
     setTraduciendo(true);
     setFallo(null);
     setAvance(null);
@@ -437,12 +555,16 @@ function Resultado({ carta, libros, alTocarTema }) {
         // se reintenta, en vez de dejar media traducción haciéndose pasar por
         // entera. Es lo que pasaba antes con las cartas largas.
         let pendientes = [tramos[i]];
+        let entero = true;          // ¿sigue siendo el tramo original?
         while (pendientes.length) {
           const tramo = pendientes.shift();
-          const datos = await pedirTraduccion(tramo, idioma, i + 1, tramos.length);
+          const datos = await pedirTraduccion(
+            tramo, idioma, i + 1, tramos.length, carta.id, entero
+          );
           if (datos.truncada && tramo.length > 800) {
             const mitad = Math.floor(tramo.length / 2);
             pendientes.unshift(tramo.slice(0, mitad), tramo.slice(mitad));
+            entero = false;
             continue;
           }
           hechos.push(datos.traduccion);
@@ -451,6 +573,7 @@ function Resultado({ carta, libros, alTocarTema }) {
         // Se muestra lo que ya está traducido mientras siguen los demás.
         setTraducciones((t) => ({ ...t, [idioma]: hechos.join("\n\n") }));
       }
+      setCompletas((c) => ({ ...c, [idioma]: true }));
       setAvance(null);
     } catch (e) {
       setFallo({ texto: mensajeAmable(e.message || e), detalle: String(e.message || e) });
@@ -525,8 +648,10 @@ function Resultado({ carta, libros, alTocarTema }) {
             ? avance && avance.total > 1
               ? `Traduciendo ${avance.hecho + 1} de ${avance.total}…`
               : "Traduciendo…"
-            : traduccion
+            : completas[idioma]
             ? "Traducida ✓"
+            : traduccion
+            ? "Seguir traduciendo"
             : "Traducir entera"}
         </button>
       </div>

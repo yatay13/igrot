@@ -1,24 +1,28 @@
-import { traducir } from "../../lib/servicios";
-
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
 
-export async function POST(pedido) {
-  try {
-    const { texto, idioma = "es", parte = 1, total = 1 } = await pedido.json();
-    if (!texto || !texto.trim()) {
-      return Response.json({ error: "no hay texto" }, { status: 400 });
-    }
-    const salida = await traducir(
-      texto,
-      idioma,
-      process.env.GEMINI_API_KEY,
-      Number(parte),
-      Number(total)
-    );
-    return Response.json(salida);
-  } catch (e) {
-    return Response.json({ error: String(e.message || e) }, { status: 500 });
-  }
+// Para saber de un vistazo qué versión está publicada de verdad.
+//
+// Tres veces seguidas estuvimos discutiendo si un arreglo estaba en Vercel o
+// no, mirando de refilón otras respuestas. Con esto se abre la dirección y se
+// lee la fecha: si es vieja, el despliegue no pasó, y no hay más que hablar.
+const PUBLICADO = "2026-09-29c · traducciones guardadas, modelos lite primero";
+
+export async function GET() {
+  return Response.json(
+    {
+      version: PUBLICADO,
+      compilado: process.env.VERCEL_GIT_COMMIT_SHA
+        ? process.env.VERCEL_GIT_COMMIT_SHA.slice(0, 7)
+        : "local",
+      tiene: {
+        conteos_exactos: true,
+        paginado: true,
+        total_por_suma_de_tomos: true,
+        traducciones_guardadas: true,
+        reintento_por_sobrecarga: true,
+      },
+    },
+    { headers: { "Cache-Control": "no-store" } }
+  );
 }

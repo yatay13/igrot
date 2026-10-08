@@ -66,10 +66,17 @@ export async function GET() {
   } catch (primerError) {
     try {
       const respaldo = await comoSePueda();
-      respaldo.porQueNoSonExactas = String(primerError.message || primerError);
+      // Antes acá iba `respaldo.porQueNoSonExactas = <el error crudo>`, y esta
+      // ruta está declarada `revalidate = 60`: o sea que el cuerpo de error de
+      // PostgREST quedaba CACHEADO y se le servía a todo el mundo durante un
+      // minuto, dentro de una respuesta 200. La página sólo necesita saber que
+      // los números no son exactos, y eso ya lo dice `exactas: false`.
+      console.error("facetas, cayó al respaldo:", primerError?.message,
+                    primerError?.detalle || "");
       return Response.json(respaldo);
     } catch (e) {
-      return Response.json({ error: String(e.message || e) }, { status: 500 });
+      console.error("facetas:", e?.message, e?.detalle || "");
+      return Response.json({ error: String(e?.message || e) }, { status: 500 });
     }
   }
 }
