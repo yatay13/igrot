@@ -10,6 +10,11 @@ export async function GET(pedido) {
   try {
     const id = new URL(pedido.url).searchParams.get("id");
     if (!id) return Response.json({ error: "falta id" }, { status: 400 });
+    // Los ids del corpus son cortos. El tope evita que una cadena enorme viaje
+    // hasta PostgREST para que la rechace allá.
+    if (id.length > 200) {
+      return Response.json({ error: "id inválido" }, { status: 400 });
+    }
 
     const filas = await tabla("cartas", {
       select:
@@ -22,6 +27,7 @@ export async function GET(pedido) {
     if (!filas.length) return Response.json({ error: "no existe" }, { status: 404 });
     return Response.json({ carta: filas[0] });
   } catch (e) {
-    return Response.json({ error: String(e.message || e) }, { status: 500 });
+    console.error("carta:", e?.message, e?.detalle || "");
+    return Response.json({ error: String(e?.message || e) }, { status: 500 });
   }
 }
