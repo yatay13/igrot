@@ -165,18 +165,22 @@ function partirEnTramos(texto, largo = LARGO_DE_TRAMO) {
 
 /** Pide un tramo traducido.
  *
- *  `cartaId` es lo que permite guardar la traducción para la próxima vez. Va
- *  en null cuando el tramo es un PEDAZO de otro tramo —eso pasa cuando el
- *  modelo llena su cupo y hay que partirlo al medio— porque los dos pedazos
- *  tendrían el mismo número de tramo y el segundo pisaría al primero en la
- *  base. Después, al leerla, volvería media carta haciéndose pasar por
- *  entera, que es exactamente el problema que arreglamos hace unos días.
+ *  `cartaId` va SIEMPRE: el servidor lo usa para leer el texto de la carta en
+ *  la base y comprobar que el tramo sea de verdad un pedazo de ella. Sin eso,
+ *  cualquiera podía mandar un texto inventado con el id de una carta real y
+ *  dejarlo guardado como su traducción.
+ *
+ *  `guardar` es lo que antes se decía mandando `cartaId: null`: va en false
+ *  cuando el tramo es un PEDAZO de otro tramo —pasa cuando el modelo llena su
+ *  cupo y hay que partirlo al medio— porque los dos pedazos tendrían el mismo
+ *  número de tramo y el segundo pisaría al primero en la base. Después, al
+ *  leerla, volvería media carta haciéndose pasar por entera.
  */
-async function pedirTraduccion(texto, idioma, parte, total, cartaId = null) {
+async function pedirTraduccion(texto, idioma, parte, total, cartaId, guardar = true) {
   const r = await fetch("/api/traducir", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ texto, idioma, parte, total, cartaId }),
+    body: JSON.stringify({ texto, idioma, parte, total, cartaId, guardar }),
   });
   const datos = await leerJson(r);
   if (datos.error) throw new Error(datos.error);
@@ -449,6 +453,7 @@ export default function Pagina() {
         </div>
       </details>
 
+      <main id="resultados">
       {error && <Problema {...error} />}
 
       {aviso && !error && <p className="aviso">{aviso}</p>}
@@ -495,6 +500,7 @@ export default function Pagina() {
           de noche», o abrí los filtros y elegí un tomo o un año.
         </div>
       )}
+      </main>
 
       <footer className="pie">
         Los textos son el OCR de los tomos originales: pueden tener errores de
@@ -553,7 +559,7 @@ function Resultado({ carta, libros, alTocarTema }) {
         while (pendientes.length) {
           const tramo = pendientes.shift();
           const datos = await pedirTraduccion(
-            tramo, idioma, i + 1, tramos.length, entero ? carta.id : null
+            tramo, idioma, i + 1, tramos.length, carta.id, entero
           );
           if (datos.truncada && tramo.length > 800) {
             const mitad = Math.floor(tramo.length / 2);
