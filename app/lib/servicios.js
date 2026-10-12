@@ -8,6 +8,31 @@ const GEMINI =
 
 const NO_SIRVEN = ["vision", "tts", "image", "audio", "live", "veo", "aqa"];
 
+/** Un fallo de Supabase, con el cuerpo crudo GUARDADO APARTE.
+ *
+ *  POR QUÉ NO VA EN EL MENSAJE. Antes acá se hacía:
+ *
+ *      throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 300)}`)
+ *
+ *  y las rutas devuelven `e.message` al navegador. O sea que el cuerpo de
+ *  PostgREST —con `message`, `details` y `hint`— terminaba en la pantalla de
+ *  cualquiera. Eso le cuenta a un desconocido los nombres de las columnas, la
+ *  firma de las funciones, el tipo de la clave y si las políticas de acceso
+ *  están puestas. No es una puerta abierta, pero es el plano del edificio.
+ *
+ *  El `message` queda corto y SIN el cuerpo, pero conserva `Supabase <código>`
+ *  porque de eso depende `mensajeAmable` en la página para decirte en castellano
+ *  qué revisar. El cuerpo crudo va en `.detalle`, que las rutas mandan a
+ *  `console.error` y queda en los registros de Vercel: ahí lo necesitás vos, no
+ *  el visitante.
+ */
+function falloDeSupabase(estado, cuerpo) {
+  const e = new Error(`Supabase ${estado}`);
+  e.detalle = String(cuerpo).slice(0, 500);
+  e.estado = estado;
+  return e;
+}
+
 // El nombre del modelo no está escrito a mano en ningún lado: cambian cada
 // pocos meses y una aplicación con uno fijo se rompe sola. Se pregunta a la
 // API y se guarda en memoria mientras el servidor esté vivo.
@@ -104,7 +129,7 @@ export async function rpc(nombre, argumentos) {
     },
     body: JSON.stringify(argumentos),
   });
-  if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 300)}`);
+  if (!r.ok) throw falloDeSupabase(r.status, await r.text());
   return r.json();
 }
 
@@ -127,7 +152,7 @@ export async function tabla(nombre, parametros = {}, conTotal = false) {
   const r = await fetch(`${url.replace(/\/$/, "")}/rest/v1/${nombre}?${query}`, {
     headers: cabeceras,
   });
-  if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 300)}`);
+  if (!r.ok) throw falloDeSupabase(r.status, await r.text());
 
   const filas = await r.json();
   if (!conTotal) return filas;
@@ -160,7 +185,57 @@ export async function guardar(nombre, fila, alChocar = null) {
     },
     body: JSON.stringify(fila),
   });
-  if (!r.ok) throw new Error(`Supabase ${r.status}: ${(await r.text()).slice(0, 300)}`);
+  if (!r.ok) throw falloDeSupabase(r.status, await r.text());
+}
+
+/** El texto hebreo de una carta, leído de la base por su id.
+ *
+ *  Hace falta para no creerle al navegador. Ver `esUnTramoDeLaCarta`.
+ */
+export async function textoDeLaCarta(cartaId) {
+  if (!cartaId) return null;
+  const filas = await tabla("cartas", {
+    select: "texto",
+    id: `eq.${cartaId}`,
+    limit: "1",
+  });
+  return filas?.[0]?.texto ?? null;
+}
+
+/** Sin espacios ni saltos, para comparar dos recortes del mismo texto. */
+const sinEspacios = (t) => String(t ?? "").replace(/\s+/g, "");
+
+/** ¿Este tramo es de verdad un pedazo de esta carta?
+ *
+ *  ESTE ES EL CONTROL QUE FALTABA, y el agujero que tapa era el peor del
+ *  sitio. `/api/traducir` recibía `cartaId` y `texto` del navegador, traducía
+ *  el texto y guardaba el resultado en la tabla `traducciones` con esa clave,
+ *  sin comprobar en ningún momento que el texto fuera de esa carta. El guardado
+ *  es un upsert, así que PISA la fila que hubiera. Y la lectura busca sólo por
+ *  (carta_id, idioma, parte, total) y, si encuentra algo, lo devuelve sin
+ *  consultar a Gemini.
+ *
+ *  O sea que un POST anónimo con el id de una carta real y un párrafo
+ *  inventado en castellano dejaba ese párrafo guardado como «la traducción» de
+ *  esa carta, y a partir de ahí se le servía a todo el que apretara «Traducir
+ *  entera». En un sitio que publica cartas del Rebe, eso es ponerle en la boca
+ *  palabras que no dijo. Es lo más grave que se puede hacer en un sitio que,
+ *  por lo demás, es de sólo lectura.
+ *
+ *  Ahora el texto a traducir se compara contra el de la base. Se comparan las
+ *  dos cadenas SIN ESPACIOS, y no con un `includes` literal, por una razón
+ *  concreta: `partirEnTramos` en la página corta por párrafo y después vuelve a
+ *  pegar los pedazos chicos con `\n\n`, así que un tramo legítimo puede tener
+ *  los saltos de línea distintos del original y un `includes` crudo lo
+ *  rechazaría. Ignorando los espacios, un tramo de verdad siempre entra, y
+ *  sigue siendo imposible fabricar un texto en castellano que, sin espacios,
+ *  aparezca dentro de una carta en hebreo.
+ */
+export function esUnTramoDeLaCarta(tramo, textoDeLaBase) {
+  const t = sinEspacios(tramo);
+  const completo = sinEspacios(textoDeLaBase);
+  if (!t || !completo) return false;
+  return completo.includes(t);
 }
 
 /** La traducción de un tramo, si ya la habíamos hecho alguna vez. */
@@ -177,7 +252,11 @@ export async function traduccionGuardada(cartaId, idioma, parte, total) {
   return filas?.[0]?.texto || null;
 }
 
-const NOMBRE_DE_IDIOMA = {
+// Se exporta para que la ruta pueda usarla como LISTA BLANCA. Antes la ruta
+// aceptaba cualquier `idioma` y acá se hacía `NOMBRE_DE_IDIOMA[idioma] || idioma`,
+// así que un texto cualquiera elegido por quien llama entraba al pedido que se
+// le manda a Gemini. Eso es un canal para escribirle instrucciones al modelo.
+export const NOMBRE_DE_IDIOMA = {
   es: "español rioplatense neutro",
   en: "inglés",
   he: "hebreo moderno",
