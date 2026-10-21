@@ -1,7 +1,7 @@
 import {
   traducir,
   traduccionGuardada,
-  guardar,
+  guardarTraduccion,
   textoDeLaCarta,
   esUnTramoDeLaCarta,
   NOMBRE_DE_IDIOMA,
@@ -104,20 +104,34 @@ export async function POST(pedido) {
 
     // 4. Guardarla para la próxima. Tampoco puede romper nada: si esto falla,
     //    la traducción igual se devuelve.
+    //
+    //    YA NO ESCRIBE LA TABLA DIRECTO. Llama a `guardar_traduccion`, que
+    //    comprueba ADENTRO DE LA BASE que `original` sea de verdad un pedazo
+    //    de esa carta. Es el mismo control que hizo `esUnTramoDeLaCarta` tres
+    //    líneas más arriba, y está repetido a propósito: el de acá evita
+    //    gastar una llamada a Gemini, y el de la base es el que no se puede
+    //    saltear, porque una vez cerrada la escritura directa no hay otro
+    //    camino a la tabla. Si alguien llama a PostgREST sin pasar por esta
+    //    ruta, se encuentra con el mismo control.
     if (hayQueGuardar && salida?.traduccion && !salida.truncada) {
       try {
-        await guardar(
-          "traducciones",
-          {
-            carta_id: cartaId,
-            idioma,
-            parte: n,
-            total: de,
-            texto: salida.traduccion,
-            modelo: salida.modelo || null,
-          },
-          "carta_id,idioma,total,parte"
-        );
+        const guardada = await guardarTraduccion({
+          cartaId,
+          idioma,
+          parte: n,
+          total: de,
+          texto: salida.traduccion,
+          modelo: salida.modelo || null,
+          // el hebreo que se mandó a traducir, que es lo que la base compara
+          original: texto,
+        });
+        // Un `false` no es un error de red: es la base diciendo que no acepta
+        // ese texto. Si eso pasa con una traducción legítima, quiero verlo en
+        // los registros y no que desaparezca en silencio.
+        if (!guardada) {
+          console.warn("la base RECHAZÓ la traducción de",
+                       cartaId, idioma, `${n}/${de}`);
+        }
       } catch (e) {
         console.warn("no pude guardar la traducción:", e.message, e.detalle || "");
       }
