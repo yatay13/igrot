@@ -91,6 +91,12 @@ async function modelos(apiKey) {
 /** Convierte la consulta del usuario en un vector de la misma forma que los
  *  que están guardados en la base. */
 export async function vectorDeConsulta(texto, apiKey, dimension = 1536) {
+  // El techo va ANTES de tocar Gemini. Si se pasó, se lanza un error: la ruta
+  // de búsqueda ya sabe seguir sin la parte semántica y avisarle al visitante,
+  // que es exactamente lo que corresponde acá.
+  if (!(await consumirCuota("buscar"))) {
+    throw new Error("se alcanzó el límite diario de búsquedas por significado");
+  }
   const { embeddings } = await modelos(apiKey);
   let ultimoError = "sin modelos de embeddings";
 
@@ -131,6 +137,60 @@ export async function rpc(nombre, argumentos) {
   });
   if (!r.ok) throw falloDeSupabase(r.status, await r.text());
   return r.json();
+}
+
+/** ¿Queda cuota para llamar a Gemini hoy?
+ *
+ *  POR QUÉ EL CONTADOR ESTÁ EN LA BASE Y NO ACÁ. Vercel levanta varias copias
+ *  de esta función y cada una tiene su propia memoria, así que un contador en
+ *  el servidor sería el límite multiplicado por una cantidad de copias que no
+ *  controlamos. En la base hay uno solo para todos.
+ *
+ *  Y el límite NO se le pasa a la función: vive en la tabla `limites`. Si
+ *  viajara como parámetro, alcanzaría con llamarla con un número enorme.
+ *
+ *  SI LA BASE NO CONTESTA, SE DEJA PASAR. Es a propósito y vale decirlo: el
+ *  techo es un control de GASTO, no de seguridad. Que Supabase tenga un mal
+ *  momento no tiene por qué dejar al visitante sin traducir. Lo que sí se
+ *  respeta siempre es un `false` explícito, que es la base diciendo «se acabó».
+ */
+export async function consumirCuota(servicio) {
+  try {
+    const r = await rpc("consumir_cuota", { p_servicio: servicio });
+    // PostgREST devuelve el booleano pelado o envuelto en un arreglo
+    const valor = Array.isArray(r) ? r[0] : r;
+    return valor !== false;
+  } catch (e) {
+    console.warn("no pude consultar la cuota:", e?.message, e?.detalle || "");
+    return true;
+  }
+}
+
+/** Guarda una traducción llamando a la función de la base.
+ *
+ *  No escribe la tabla directo. La función `guardar_traduccion` comprueba
+ *  ADENTRO DE LA BASE que `original` sea de verdad un pedazo de esa carta,
+ *  que es el mismo control que hace `esUnTramoDeLaCarta` acá. La diferencia
+ *  es que adentro de la base no se puede saltear: una vez cerrada la
+ *  escritura directa, no hay otro camino a la tabla.
+ *
+ *  Devuelve `true` si guardó. Un `false` quiere decir que la base rechazó el
+ *  texto, y eso conviene que quede en los registros.
+ */
+export async function guardarTraduccion(
+  { cartaId, idioma, parte, total, texto, modelo, original }
+) {
+  const r = await rpc("guardar_traduccion", {
+    p_carta_id: cartaId,
+    p_idioma: idioma,
+    p_parte: parte,
+    p_total: total,
+    p_texto: texto,
+    p_modelo: modelo || null,
+    p_original: original,
+  });
+  const valor = Array.isArray(r) ? r[0] : r;
+  return valor === true;
 }
 
 /** Lee filas de una tabla.
@@ -330,6 +390,14 @@ const PRESUPUESTO_MS = 45000;
 const POR_LLAMADA_MS = 22000;
 
 export async function traducir(texto, idioma, apiKey, parte = 1, total = 1) {
+  // Igual que arriba, antes de gastar. Acá el corte sí se le muestra a la
+  // persona: no hay manera de traducir «a medias».
+  if (!(await consumirCuota("traducir"))) {
+    throw new Error(
+      "se alcanzó el límite diario de traducciones. Las que ya están hechas " +
+        "se siguen mostrando; las nuevas vuelven mañana."
+    );
+  }
   const empezo = Date.now();
   const restante = () => PRESUPUESTO_MS - (Date.now() - empezo);
 
