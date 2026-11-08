@@ -1745,3 +1745,314 @@ Los dejo escritos porque el patrón se repite y reconocerlo ahorra tiempo.
 La regla que sale de todo esto: **medir antes de construir, y cuando no se
 puede medir, decirlo en vez de elegir por corazonada.** Y medir **la unidad
 que decide**, preguntándole al código y al corpus, no a mi lectura de ellos.
+
+---
+
+## 10. La campaña del 19 al 22 de octubre de 2026
+
+Diez arreglos aplicados a producción en cuatro días, más tres archivos de
+control por etapa. Todo con freno de mano, respaldo y vuelta atrás.
+
+### Lo que se aplicó, con números
+
+| Qué | Cartas tocadas | Archivo |
+|---|---|---|
+| Rosh Jódesh y Rosh Hashaná mal clasificadas | 70 + 23 quitadas | `arreglar_rosh_jodesh_y_rosh_hashana.sql` |
+| Filtro de festividades en dos grupos («fechadas» / «la mencionan») | 0 · 51 opciones, **sin cambiar el sitio** | `filtro_de_festividades_en_dos_grupos.sql` |
+| La cola larga de etiquetas: 336 → 227 | 188 | `plegar_la_cola_larga.sql` |
+| Cuadraditos y HTML en los resúmenes | 56 | `arreglar_los_cuadraditos.sql` |
+| Festividades reclasificadas y sacadas de `temas` | 1.133 | `poner_las_festividades_en_su_lugar.sql` |
+| `tefilí` → `tefilín`, `tefil◻` → `tefilá` | 2 | `reparar_tefili_y_el_chip.sql` |
+| Permisos: `anon` sin escritura, vistas con `security_invoker` | — | `cerrar_los_permisos.sql` |
+| Cuota diaria en la base + `guardar_traduccion` | — | `poner_limite_y_cerrar_la_escritura.sql` |
+| Letras de otro alfabeto adentro de palabras hebreas | 1.398 | `limpiar_el_texto_hebreo.sql` |
+| **La comilla escrita como dos yods** | **5.365** | `arreglar_la_comilla_por_tandas.sql` |
+
+### El filtro en dos grupos, sin tocar el sitio
+
+`buscar_cartas` recibe un solo parámetro de festividad, así que el grupo se
+codifica como sufijo del nombre (`Pésaj — fechadas`, `Pésaj — la mencionan`) y
+la función lo parsea. `facetas_de_cartas` devuelve las 51 opciones ya armadas.
+Cero cambios en el sitio: el desplegable se llena solo.
+
+### La comilla, el defecto de mayor alcance encontrado hasta hoy
+
+En 13 tomos el OCR escribió la comilla doble `"` como dos yods `יי`. El hebreo
+abrevia con comillas todo el tiempo, así que eran decenas de miles de palabras
+que **no se encontraban al buscarlas**:
+
+```
+בייה → ב"ה (2.066)   ·   כייק → כ"ק (1.419)   ·   אדמוייר → אדמו"ר (1.363)
+הנייל → הנ"ל (976)   ·   מוייח → מו"ח (971)   ·   שליטייא → שליט"א (392)
+```
+
+De 12.073 palabras distintas con `יי` (115.016 apariciones), se aprobaron
+**991** (35.463 apariciones). Resultado en producción:
+
+```
+cartas con «הרהייח»              300 → 0
+cartas con «ב"ה»               9.866 → 11.900   (+2.034)
+cartas con «בייה» palabra entera 2.049 → 9
+```
+
+**Las tres condiciones de aprobación**, que es lo que hay que copiar en
+cualquier arreglo parecido:
+
+1. la versión con comilla **existe** en el corpus, 20 veces o más;
+2. la palabra rota aparece **casi sólo en los tomos del lote malo** (10% o
+   menos en los limpios) — esto sale de la provenencia, no de un umbral;
+3. no está en la lista de intocables.
+
+La condición 2 es la que de verdad separa, y la prueba está en los números:
+las abreviaturas rotas tienen 0-1% en tomos limpios, y las palabras de verdad
+—`אייר` (Iyar, el mes), `זיין`, `חיים`, `קיין`, `שייך`— tienen **56-73%**.
+No hay zona grisa: hay un hueco entre el 10% y el 56%.
+
+**La barra que casi apliqué era peligrosa.** La primera versión aprobaba si la
+corregida aparecía 3 veces o más, y con eso entraban `זיין → ז"ן` (4.343
+rotas, 3 corregidas), `אייר → א"ר` (1.859 · 37) y `קיין → ק"ן` (542 · 5).
+Habría destruido unas 8.000 apariciones de palabras correctas, **el nombre de
+un mes entre ellas**.
+
+**Las rachas de tres yods.** `אי"א` roto es `איייא`: la comilla puede ser el
+primer par o el segundo, así que se arman las dos versiones y gana la que el
+corpus confirma. `א"יא` no existe, `אי"א` sí. Igual `השייית → השי"ת`,
+`זיייע → זי"ע`, `תשיייד → תשי"ד`.
+
+**`\m` y `\M` (bordes de palabra) funcionan con letras hebreas en Postgres**,
+comprobado. Sin ellos `ובייהם` («y en ellos») se convierte en `וב"הם`.
+
+**Los `ח"ו` quedan sin arreglar a propósito** (651 casos): `חייו` es a la vez
+«Dios no lo permita» abreviado y «su vida» escrito normal, y no se pueden
+distinguir sin leer la oración. Mejor perder el arreglo que destruir «su vida».
+
+### Los controles por etapa
+
+| Etapa | Archivo | Estado |
+|---|---|---|
+| 1 · el texto (OCR) | `que_tan_limpio_esta_el_texto.sql` + `que_letra_reemplaza_a_cual.sql` | hecho |
+| 2 · el cortado | `estan_bien_cortadas_las_cartas.sql` | hecho |
+| 3 · el enriquecido | `controles_del_enriquecimiento.sql` | hecho |
+| 4 · los vectores | — | **falta** |
+
+`controles_del_enriquecimiento.sql` no inventa qué debería decir cada carta:
+comprueba **las promesas que `enriquecedor.py` hace y son verificables**,
+copiadas de su código — `MESES_CANONICOS`, `ANIO_MIN/ANIO_MAX` (5680-5755),
+`MINIMO_DESTINATARIO` (5), los topes de 200 y 80 caracteres, el corte en 8
+temas. Más tres controles que salen del corpus: el mes hebreo contra el mes
+gregoriano, el año hebreo contra el gregoriano (H-3761 o H-3760), y el orden
+cronológico del tomo con mediana. El veredicto final **se calcula contando la
+tabla de controles**, no se escribe a mano.
+
+Resultado al 22/10 sobre 13.613 cartas: **17 controles pasaron, 10 fallaron,
+9 informativos**. Pasaron limpios los siete que cuidan los arreglos de la
+semana (cero HTML, cero cuadraditos, cero etiquetas rotas, cero festividades
+genéricas, y las tres coherencias de fecha).
+
+### Los archivos SQL nuevos
+
+| Archivo | Qué hace | ¿Cambia datos? |
+|---|---|---|
+| `arreglar_rosh_jodesh_y_rosh_hashana.sql` | Quita RJ/RH donde la fecha no cae ahí | **Sí.** Con freno |
+| `filtro_de_festividades_en_dos_grupos.sql` | Las dos funciones del sitio, con el filtro en dos grupos | No toca filas |
+| `la_cola_larga_de_etiquetas.sql` | Mide la cola larga de `temas` | No |
+| `plegar_la_cola_larga.sql` | Pliega 109 etiquetas por esqueleto, familia y mapa | **Sí.** Con freno |
+| `que_son_los_cuadraditos.sql` / `la_carta_del_cuadradito.sql` | Miden los caracteres de control | No |
+| `arreglar_los_cuadraditos.sql` | Recupera la letra perdida desde el corpus | **Sí.** Con freno |
+| `limpiar_y_medir_las_festividades.sql` | Mide festividades contra la fecha | No |
+| `poner_las_festividades_en_su_lugar.sql` | Reclasifica y saca festividades de `temas` | **Sí.** Con freno |
+| `auditar_la_seguridad_de_la_base.sql` / `que_son_las_otras_tablas.sql` | Auditan permisos, RLS y vistas | No |
+| `cerrar_los_permisos.sql` | Revoca escritura a `anon`, `security_invoker` en las 7 vistas | **Sí.** Con freno y `volver_atras` |
+| `poner_limite_y_cerrar_la_escritura.sql` | `uso_diario`, `limites`, `consumir_cuota`, `guardar_traduccion` | **Sí.** Dos frenos |
+| `estan_bien_cortadas_las_cartas.sql` | Control de la etapa 2 | No |
+| `que_tan_limpio_esta_el_texto.sql` / `que_letra_reemplaza_a_cual.sql` | Controles de la etapa 1 | No |
+| `limpiar_el_texto_hebreo.sql` | Reemplaza letras de otro alfabeto confirmadas | **Sí.** Con respaldo |
+| `refrescar_los_indices_de_busqueda.sql` | Comprueba si `texto_tsv`/`busqueda_es` quedaron viejos | **Sí.** Con freno |
+| `controles_del_enriquecimiento.sql` | Control de la etapa 3, 36 controles con veredicto | No |
+| `por_que_hay_cartas_de_1992.sql` | Mide las fechas imposibles y qué paso las metió | No |
+| `que_le_pasa_al_adar_y_al_anio.sql` | El `אדר ב` en años no bisiestos y los años mal formados | No |
+| `que_dice_la_pagina.sql` | Le pregunta a cada carta qué dice su propio texto | No |
+| **`arreglar_la_comilla_por_tandas.sql`** | **La comilla, por tandas. Correr hasta que diga LISTO** | **Sí.** Con respaldo |
+| `terminar_la_comilla.sql` | Verifica con la cuenta de caracteres y cierra las sueltas | **Sí.** Con freno |
+
+### El sitio: dos archivos cambiados
+
+- `app/lib/servicios.js` — `consumirCuota(servicio)` (falla abierto ante
+  errores, respeta un `false` explícito) y `guardarTraduccion({...})`. La
+  cuota se chequea al principio de `vectorDeConsulta` y de `traducir`.
+- `app/api/traducir/route.js` — llama a `guardarTraduccion` en vez de
+  escribir directo en `traducciones`, y registra cuando la base rechaza.
+
+**El contador de cuota vive en la base, no en el sitio**, porque Vercel corre
+varias instancias con memoria separada. El límite está en la tabla `limites`,
+nunca se pasa como parámetro.
+
+---
+
+## 11. El estado al 6 de noviembre, y lo que falta
+
+### Las fechas, que es el bloque más grande (todo medido, nada aplicado)
+
+**28 cartas de 9.092 con fecha están fuera de la banda de su tomo (±15 años).**
+No son 2.127 como dijo un control mío mal calibrado: con una banda honesta son
+28. Y se parten en dos familias, las dos de una sola letra hebrea:
+
+- **`ב` por `כ` · 14 cartas.** `תשב"א` no es un año que exista: después de
+  `תש` va la letra de las decenas, y las decenas son `י כ ל מ נ ס ע פ צ`. La
+  `ב` vale 2 y no puede estar ahí. Leyendo `תשכ"א` el año sube 18 y cae
+  **exactamente** en su tomo: `תשכ"א`→1961→tomo 20, `תשכ"ב`→1962→tomo 22,
+  `ה'תשכ"ו`→1966→tomo 24. De 36 cartas con `ב` en ese lugar, 14 tienen el año
+  fuera del tomo y son **las mismas 14** que +18 repara.
+- **`נ` por `י` · 10 cartas.** Fechadas en 1989-1993 dentro de los tomos 3 a 7.
+  Acá el texto trae la comilla bien puesta y un año que existe (`תשנ"ב`), así
+  que **desde la base no se puede saber** si el OCR se equivocó o si son
+  cartas de verdad de los años 90 metidas en el tomo equivocado. Hay que mirar
+  la página. Son 10 y están identificadas con tomo y página.
+
+**16 cartas más tienen `אדר א`/`אדר ב` en un año que no es bisiesto**, y un año
+es bisiesto cuando `(7·año + 1) mod 19 < 7`. Las 16 son problema de **año**, no
+de mes (ver la sección 12, «cuando dos defectos se superponen»).
+
+**Qué paso del programa metió el dato:** de las 28, **14 traen
+`fecha_corregida_por_ia`** y 11 traen `anio_fuera_del_tomo`. O sea que el
+enriquecedor marcó el año como dudoso, le dejó al modelo reemplazar la fecha,
+y el modelo puso un año que **igual pasa el control de rango** porque el rango
+del enriquecedor es 5680-5755 (todo el período de las Igrot Kodesh) y no el
+rango del tomo. **Ahí está el arreglo de raíz:** comparar el año propuesto
+contra `libros.anios_hebreos`, que ya está en la base.
+
+El arreglo necesita recalcular la fecha gregoriana, y eso requiere el
+conversor de calendario hebreo que está en Python. **Va en una celda de
+Colab, no en SQL.**
+
+### Lo demás que falta, en orden de valor
+
+1. **Las 9 cartas de la comilla** en tomos que no llegaron al 5%
+   (`terminar_la_comilla.sql`, medido, sin aplicar).
+2. **249 destinatarios de 1 a 4 caracteres**: `הרה`, `מוה`, `ה`, `מו` — el
+   prefijo honorífico cortado. El enriquecedor tiene un freno
+   (`MINIMO_DESTINATARIO`, descartó 2.257) pero sólo mira la propuesta del
+   modelo: éstos entraron por el camino de las reglas del segmentador, que no
+   tiene mínimo. Mejor vaciarlos que mostrar un dato falso.
+3. **51 de los 72 lugares distintos aparecen una sola vez, y casi todos son
+   variantes de ברוקלין con ruido del OCR**: `ברוק,לין`, `ברוקליו.`,
+   `ברוקלין, נ.*.`, `ברוקליר`, y uno con una `ل` árabe. Es el mismo plegado de
+   los temas aplicado a `lugar`, y se ve en el chip de cada carta.
+4. **176 cartas están en el grupo «fechadas» del filtro sin ninguna fecha
+   hebrea**, que es justo lo que ese grupo promete.
+5. **«Shabat» es a la vez tema (272 cartas) y festividad.** Hace falta
+   decidir cuál de las dos cosas es. Es la etiqueta que el guardarraíl del
+   plegado habría salteado en silencio.
+6. **69 cartas sin ningún tema** (invisibles para el filtro).
+7. **96 de 212 etiquetas de tema volvieron a tener una sola carta**: la cola
+   larga se rearma y conviene plegar cada tanto.
+8. **28 resúmenes repetidos palabra por palabra.** No es un defecto del
+   resumen: son **cartas duplicadas** que el control encontró de rebote.
+9. 3 resúmenes de menos de 40 caracteres · 1 con `&#257;` sin decodificar.
+10. **El control de la etapa 4 (los vectores)**, que nunca se escribió.
+11. **5.896 cartas sin vector hebreo** (7.717 de 13.613), y las 1.398 que
+    cambiaron de texto tienen el vector viejo.
+12. **1.852 cartas sin fecha gregoriana.** De ésas, 796 tienen un año `תש...`
+    escrito en el texto y 750 tienen `anio_hebreo` leído, pero **ninguna
+    tiene día, mes y año a la vez**, así que no se pueden convertir con
+    aritmética: hace falta parsear el texto.
+13. **El diseño y la foto del Rebe.** Bloqueado: hace falta que Ariel aporte
+    una imagen que pueda usar (no se pueden descargar desde acá, y las fotos
+    las administra JEM / Lubavitch Archives). El hueco del fondo está
+    pensado: opacidad baja, posición fija, degradado para proteger la lectura,
+    y no se carga en teléfonos.
+14. **La monetización.** Bloqueada por los derechos: el texto de las Igrot
+    Kodesh es de Kehot / Agudas Chasidei Chabad. Caminos que no venden el
+    texto: dedicatorias y sponsoreo, las traducciones (que son de Ariel),
+    licenciar la herramienta, acceso institucional con permiso de Kehot.
+15. **Las 90 cartas pegadas** y **el orden visual invertido en los tomos
+    23-27**: no se arreglan con SQL, hay que volver a cortar.
+16. Los 21 `תש"יכ` del tomo 19 · volver a cortar los tomos 25-32 para que las
+    116 cartas en ruso lleguen al sitio · `Iud Shvat` tiene sólo 18 fechadas
+    de 205 (sospechoso, sin mirar) · 4 páginas a 120 DPI en el tomo 5 ·
+    `inheritdoc` en el tomo 14 p204.
+
+---
+
+## 12. Reglas de método que salieron de octubre
+
+Son las que más veces me hicieron perder tiempo o casi romper datos. Están
+acá para no volver a aprenderlas.
+
+- **⚠️ `like '%palabra%'` encuentra la palabra ADENTRO de otras, y en hebreo
+  eso pasa siempre** porque los prefijos van pegados: `בפאריז`, `לפאריז`,
+  `מפאריז` contienen `פאריז`. **Me pasó cuatro veces en una semana**, la
+  última en el renglón que verificaba un arreglo: decía «2.066 → 15» y
+  parecía que había fallado, cuando los 15 eran `ובייהם`, la palabra correcta
+  que el arreglo protege. Para palabra entera: `\mpalabra\M` o
+  `plainto_tsquery`.
+- **Una banda generosa sólo puede condenar, nunca absolver.** Mi banda de ±15
+  años está hecha para encontrar lo imposible, y la usé para declarar que un
+  año «encaja con su tomo». Un error de dos años pasa por ahí sin que se
+  note. Son dos preguntas distintas.
+- **Cuando dos defectos se superponen, el diagnóstico del segundo no vale
+  hasta arreglar el primero.** Medí el `אדר` sobre un texto que todavía tenía
+  la comilla rota, y le dije a 7 cartas «el mes está mal» cuando su página
+  decía `אד"ש` — `אדר שני` abreviado — escrito `אדייש`. **No había manera de
+  verlo hasta arreglar la comilla.** El orden es de abajo hacia arriba:
+  primero el texto, después lo que se lee del texto.
+- **Nunca preguntarle a dos campos pegados lo que hay que preguntarle a cada
+  uno.** Pegué `fecha_hebrea_texto`, `encabezado` y `texto` con un espacio, y
+  un encabezado que termina en `אדר` seguido del `ב"ה` del texto formaba
+  `אדר ב"`: una coincidencia que no está en la página, la fabricó mi pegado.
+- **Un canario que frena el arreglo vale más que un filtro.** La lista de
+  intocables tiene las palabras de verdad que ya vimos. Si alguna pasa las
+  condiciones de datos, el archivo **no aplica nada**: si el filtro hace
+  falta, el filtro está mal y hay que verlo.
+- **Buscar una verificación que no mire palabras.** Cada arreglo de la
+  comilla cambia dos caracteres por uno, así que acorta el texto en
+  exactamente un carácter: el total que pierde el corpus tiene que ser igual
+  a las apariciones arregladas. Se comprueba contra el respaldo sin mirar ni
+  una palabra, y es la verificación más difícil de engañar del proyecto.
+- **Medir y arreglar en el mismo archivo lo hizo cortar.** El arreglo de la
+  comilla armaba el vocabulario (1-2 minutos) **y** hacía 42 reescrituras de
+  la tabla, y Supabase contestó «Failed to fetch». Ahora el mapa se guarda en
+  una tabla y cada corrida aplica una tanda. **Un arreglo que se puede repetir
+  sin consecuencias se puede cortar sin miedo.**
+- **No poner el texto literal del interruptor en los comentarios.** `false as
+  aplicar` aparecía tres veces en el archivo y la primera estaba en un
+  comentario: Ariel cambió el comentario y el arreglo no se aplicó. Ahora el
+  interruptor está en el renglón 9 y la palabra aparece **una sola vez en todo
+  el archivo**. Y el informe dice el modo en el **primer** renglón, no sólo al
+  final.
+- **Una prueba con un número escrito a mano se rompe cada vez que el corpus de
+  prueba crece**, y eso entrena a ignorarla. Las expectativas se calculan.
+- **`ט"ו` y `ט"ז` son las formas correctas del 15 y el 16** (9+6 y 9+7), para
+  no escribir las letras del Nombre. Mi regla de «año imposible» las marcaba
+  como error: 1.461 cartas, dos años enteros, y el título del tomo 13 en la
+  tabla `libros` dice `קיץ תשט"ז`.
+- **`אד"ש` es `אדר שני` y `אד"ר` es `אדר ראשון`**, abreviados, y son la forma
+  más común en las cartas. `אד"ש` suelto en el cuerpo puede ser «אחר דרישת
+  שלום», un saludo: la regla abreviada sólo vale en el renglón de la fecha.
+- **`reltuples` devuelve -1 antes de ANALYZE** (usar `query_to_xml` para
+  contar exacto) · **`\set` es un metacomando de psql** que el editor web no
+  entiende (usar una tabla temporal de una fila) · **las tablas temporales
+  mueren con la conexión**, así que las comprobaciones se pegan al mismo .sql ·
+  **`cmd | grep ... || fallar` mira el estado del grep, no del comando**.
+
+---
+
+## 13. Lo que se perdió el 6 de noviembre, y la lección
+
+El contenedor de la sesión se reinició y se llevó la carpeta de trabajo. Lo
+que estaba en el repo se recuperó entero. Lo que **no** estaba:
+
+- **`pruebas_sql/`, el banco de pruebas.** Siete guiones de prueba y
+  `esquema_de_prueba.sql` con todas las fixtures de todos los defectos que
+  encontramos en el año. **Existía sólo en el contenedor.** Hay que
+  reconstruirlo, y esta vez subirlo al repo.
+- Las secciones 10 a 12 de este documento, que se reescribieron de memoria.
+
+Los archivos SQL no se perdieron de verdad: Ariel los descargó uno por uno
+para pegarlos en Supabase. Los cuadernos y el código del canal
+(`segmentador.py`, `enriquecedor.py`, `cargador.py`) viven en su Drive.
+
+**La lección:** un archivo que existe en un solo lugar no existe. El banco de
+pruebas era la herramienta que encontró la mitad de mis errores de octubre, y
+lo dejé fuera del repo durante semanas sabiéndolo. **Todo lo que se construye
+va al repo el mismo día.**
