@@ -122,6 +122,21 @@ async function leerJson(r) {
 const LARGO_DE_TRAMO = 2500;
 const POR_PAGINA = 20;
 
+/** Las preguntas que se ofrecen cuando todavía no se buscó nada.
+ *
+ *  Están elegidas para que cada una muestre algo distinto de lo que el
+ *  buscador sabe hacer: una pregunta de consejo, una de costumbre, una sobre
+ *  un momento del año y una sobre un oficio. Ninguna es una palabra suelta,
+ *  justamente porque lo que hay que enseñar es que acá se pregunta por
+ *  sentido y no por palabras exactas. */
+const EJEMPLOS = [
+  "qué dice el Rebe sobre estudiar de noche",
+  "consejos para quien empieza a poner tefilín",
+  "cartas a una madre preocupada por la escuela de sus hijos",
+  "qué pide el Rebe antes de Rosh Hashaná",
+  "cartas a un médico sobre su trabajo",
+];
+
 /** Parte una carta larga en tramos para traducirlos de a uno.
  *
  *  Corta por párrafo, y si un párrafo solo ya es más largo que el tramo, por
@@ -302,6 +317,16 @@ export default function Pagina() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  /** Una búsqueda de ejemplo, de las que se ofrecen cuando no hay resultados
+   *  todavía. Limpia los filtros a propósito: si quedara uno puesto de una
+   *  búsqueda anterior, el ejemplo devolvería poco o nada y parecería que el
+   *  buscador no sirve. */
+  function buscarEjemplo(texto) {
+    setFiltros(FILTROS_VACIOS);
+    setConsulta(texto);
+    buscar(FILTROS_VACIOS, texto);
+  }
+
   function limpiar() {
     setFiltros(FILTROS_VACIOS);
     setConsulta("");
@@ -312,11 +337,48 @@ export default function Pagina() {
 
   return (
     <div className="envoltorio">
+      {/* LA PORTADA.
+          Antes era un `<h1>` que mezclaba el hebreo y el castellano en un
+          renglón («אגרות קודש · Buscador») y abajo un párrafo. Se leía como un
+          marcador de posición. Ahora está armada como la portada de un sefer:
+          el nombre hebreo solo y grande, una regla, y debajo de qué se trata.
+
+          Y las cifras no están escritas a mano: salen de `facetas`, que es lo
+          que la base contestó hace un minuto. Un número escrito acá quedaría
+          viejo con la primera carga y nadie se enteraría. */}
       <header className="cabecera">
-        <h1>אגרות קודש · Buscador</h1>
-        <p>
-          Cartas del Rebe de Lubavitch. Preguntá en castellano lo que buscás:
-          la búsqueda entiende el sentido, no hace falta acertar las palabras.
+        <h1 className="titulo-heb" lang="he" dir="rtl">
+          אגרות קודש
+        </h1>
+        <p className="titulo-lat">
+          Buscador de las cartas del Rebe de Lubavitch
+        </p>
+
+        {facetas && !facetas.error && (
+          <p className="cifras">
+            <span>
+              <b>
+                {facetas.exactas === false ? "+" : ""}
+                {Number(facetas.total || 0).toLocaleString("es-AR")}
+              </b>{" "}
+              cartas
+            </span>
+            <span>
+              <b>{facetas.libros?.length || 0}</b> tomos
+            </span>
+            {facetas.anioMin && facetas.anioMax && (
+              <span>
+                <b>
+                  {facetas.anioMin}–{facetas.anioMax}
+                </b>
+              </span>
+            )}
+          </p>
+        )}
+
+        <p className="entrada">
+          Preguntá en castellano lo que buscás: la búsqueda entiende el
+          sentido, no hace falta acertar las palabras.
         </p>
       </header>
 
@@ -494,10 +556,34 @@ export default function Pagina() {
         </div>
       )}
 
+      {/* LA PANTALLA VACÍA.
+          Antes era un renglón de consejo flotando en una tarjeta, y debajo
+          medio metro de página en blanco. Era el lugar donde más se notaba
+          que no había nada que mirar.
+
+          Ahora son preguntas de verdad, que se pueden tocar. Sirven para dos
+          cosas a la vez: llenan el hueco y enseñan **cómo** se le pregunta a
+          este buscador, que no es por palabras sueltas sino por sentido. Es
+          la diferencia entre decir «preguntá en castellano» y mostrarlo. */}
       {resultados === null && !error && (
-        <div className="aviso">
-          Probá con una pregunta entera, como «qué dice el Rebe sobre estudiar
-          de noche», o abrí los filtros y elegí un tomo o un año.
+        <div className="empezar">
+          <p className="empezar-titulo">Probá con una pregunta entera</p>
+          <div className="ejemplos">
+            {EJEMPLOS.map((e) => (
+              <button
+                key={e}
+                type="button"
+                className="ejemplo"
+                onClick={() => buscarEjemplo(e)}
+              >
+                {e}
+              </button>
+            ))}
+          </div>
+          <p className="empezar-pie">
+            O abrí los filtros y elegí un tomo, un tema, una festividad o un
+            año.
+          </p>
         </div>
       )}
       </main>
