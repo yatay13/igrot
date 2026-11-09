@@ -127,6 +127,7 @@ body {
 
 body {
   overflow-x: hidden;
+  position: relative;
   /* Un degradado apenas perceptible: el papel de arriba un poco más claro.
      Fijo, así no se mueve al desplazar. */
   background-image: radial-gradient(
@@ -136,6 +137,102 @@ body {
   );
   background-repeat: no-repeat;
   background-attachment: fixed;
+}
+
+/* ===========================================================================
+   EL FONDO: LA FOTO Y EL GRANO DEL PAPEL
+   ---------------------------------------------------------------------------
+   Dos capas fijas detrás de todo, que no reciben clics y no entran en el
+   orden de lectura: son decoración y nada más.
+
+   ·  `body::before` es **el hueco para la foto del Rebe**. Mientras
+      `--foto-del-rebe` valga `none` no se dibuja nada y la página se ve
+      exactamente igual que sin esta capa. Para ponerla:
+
+          1 · guardá la imagen en `public/rebe.jpg` del repo
+          2 · cambiá el renglón de abajo por:
+              --foto-del-rebe: url("/rebe.jpg");
+
+      No hace falta tocar ninguna otra cosa. Está pensada para que la foto
+      ACOMPAÑE y no compita: va arriba a la derecha, en escala de grises con
+      un velo sepia para que entre en la paleta del papel, con opacidad muy
+      baja, y con una máscara que la desvanece justo donde empieza el texto.
+      Si la imagen no existe, el navegador no dibuja nada y no hay error
+      visible.
+
+   ·  `body::after` es el grano del papel: dos tramas diagonales cruzadas,
+      hechas con degradados, sin ninguna imagen que descargar. Es lo que
+      saca la sensación de «rectángulo de color plano» que tenía el fondo.
+
+   En teléfonos la foto no se carga (más abajo, en la consulta de ancho): es
+   peso y datos que no aportan nada en una pantalla donde el texto ocupa todo.
+   En impresión tampoco.
+   =========================================================================== */
+:root {
+  --foto-del-rebe: none;
+  --foto-opacidad: 0.09;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --foto-opacidad: 0.13;
+  }
+}
+:root[data-theme="dark"] {
+  --foto-opacidad: 0.13;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  background-image: var(--foto-del-rebe);
+  background-repeat: no-repeat;
+  background-position: right -4vw top -2vw;
+  background-size: min(62vw, 820px) auto;
+  opacity: var(--foto-opacidad);
+  filter: grayscale(1) sepia(0.35) contrast(1.05);
+  /* La máscara: entera arriba a la derecha, desvanecida hacia el centro y
+     hacia abajo, que es por donde corre el texto. */
+  -webkit-mask-image: radial-gradient(
+    85% 70% at 100% 0%,
+    #000 0%,
+    rgba(0, 0, 0, 0.55) 45%,
+    transparent 78%
+  );
+  mask-image: radial-gradient(
+    85% 70% at 100% 0%,
+    #000 0%,
+    rgba(0, 0, 0, 0.55) 45%,
+    transparent 78%
+  );
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.5;
+  background-image: repeating-linear-gradient(
+      58deg,
+      color-mix(in oklab, var(--borde) 30%, transparent) 0 1px,
+      transparent 1px 4px
+    ),
+    repeating-linear-gradient(
+      -58deg,
+      color-mix(in oklab, var(--borde) 22%, transparent) 0 1px,
+      transparent 1px 5px
+    );
+  /* El grano se ve en los márgenes y se apaga en el medio, donde se lee. */
+  -webkit-mask-image: radial-gradient(
+    120% 85% at 50% 32%,
+    transparent 0%,
+    #000 100%
+  );
+  mask-image: radial-gradient(120% 85% at 50% 32%, transparent 0%, #000 100%);
 }
 
 ::selection {
@@ -178,58 +275,155 @@ body {
   padding: 0 20px 96px;
 }
 
-/* ---------- encabezado ------------------------------------------------- */
+/* ---------- encabezado: la portada -------------------------------------
+   Armada como la portada de un sefer, que es lo que el corpus es: el nombre
+   hebreo solo y grande, una regla fina, y recién después de qué se trata.
+
+   El hebreo NO lleva `letter-spacing` negativo. Apretar las letras es un
+   recurso de la tipografía latina para títulos grandes; en hebreo junta las
+   formas cuadradas y empeora la lectura, sobre todo con `ו` y `ן` al lado de
+   otra letra. */
 .cabecera {
-  padding: 56px 0 28px;
+  padding: clamp(44px, 7vw, 76px) 0 26px;
   text-align: center;
 }
-.cabecera h1 {
+
+.titulo-heb {
   margin: 0;
   font-family: var(--serif-hebrea);
-  font-size: clamp(1.75rem, 5.2vw, 2.6rem);
-  line-height: 1.15;
-  letter-spacing: -0.015em;
+  font-size: clamp(2.6rem, 8vw, 4.4rem);
+  line-height: 1.08;
   font-weight: 700;
-  /* El título en la serif hebrea, que es la letra del corpus: ata la portada
-     con lo que se lee adentro. */
+  letter-spacing: 0.01em;
+  color: var(--texto);
 }
-.cabecera p {
-  margin: 12px auto 0;
-  max-width: 58ch;
+
+/* La regla doble de abajo del título: una línea fina y larga, y un rombo de
+   tinta en el medio. Es el gesto de una portada impresa, y son dos
+   pseudo-elementos: no hay ninguna imagen. */
+.titulo-lat {
+  position: relative;
+  margin: 18px auto 0;
+  padding-top: 20px;
+  max-width: 60ch;
+  text-wrap: balance;
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--suave);
+}
+.titulo-lat::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(320px, 72%);
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--borde-fuerte) 18%,
+    var(--borde-fuerte) 82%,
+    transparent
+  );
+}
+.titulo-lat::after {
+  content: "";
+  position: absolute;
+  top: -3px;
+  left: 50%;
+  width: 7px;
+  height: 7px;
+  transform: translateX(-50%) rotate(45deg);
+  background: var(--tinta);
+  opacity: 0.75;
+}
+
+/* Las cifras del corpus. No son adorno: son lo que convierte «un buscador»
+   en «trece mil seiscientas cartas». Salen de la base, no están escritas. */
+.cifras {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px 26px;
+  margin: 18px 0 0;
+  font-size: 0.86rem;
+  color: var(--suave);
+  letter-spacing: 0.02em;
+}
+.cifras span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.cifras span + span {
+  border-inline-start: 1px solid var(--borde-fuerte);
+  padding-inline-start: 26px;
+}
+.cifras b {
+  font-family: var(--serif-hebrea);
+  font-size: 1.22rem;
+  font-weight: 700;
+  color: var(--tinta);
+  font-variant-numeric: lining-nums tabular-nums;
+}
+
+.cabecera .entrada {
+  margin: 20px auto 0;
+  max-width: 56ch;
   color: var(--suave);
   font-size: 1rem;
   text-wrap: pretty;
 }
 
-/* ---------- buscador --------------------------------------------------- */
+/* ---------- buscador ---------------------------------------------------
+   Antes eran dos rectángulos redondeados separados por un hueco, flotando
+   cada uno con su sombra. Se leía como dos controles sueltos. Ahora el campo
+   y el botón son **una sola pieza**: un borde que los rodea a los dos, el
+   botón pegado adentro. Un instrumento, no dos cosas.
+
+   `--ancho-buscador` lo mantiene angosto en pantallas grandes: un campo de
+   texto de mil píxeles de ancho invita a escribir una palabra suelta, y acá
+   lo que queremos es que escriban una pregunta. */
 .buscador {
   display: flex;
-  gap: 10px;
-  margin-top: 20px;
+  gap: 0;
+  margin: 26px auto 0;
+  max-width: 740px;
+  background: var(--panel);
+  border: 1px solid var(--borde-fuerte);
+  border-radius: var(--radio);
+  box-shadow: var(--sombra);
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.buscador:focus-within {
+  border-color: var(--tinta);
+  box-shadow: var(--sombra-alta);
 }
 .buscador input {
   flex: 1;
   min-width: 0;
-  padding: 15px 18px;
+  padding: 16px 18px;
   font-size: 1.05rem;
   font-family: inherit;
   color: var(--texto);
-  background: var(--panel);
-  border: 1px solid var(--borde);
-  border-radius: var(--radio);
-  box-shadow: var(--sombra);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radio) 0 0 var(--radio);
+  box-shadow: none;
   transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.buscador input:focus-visible {
+  outline-offset: -3px;
 }
 .buscador input::placeholder {
   color: var(--suave);
   opacity: 0.75;
 }
-.buscador input:hover {
+.buscador:hover {
   border-color: var(--borde-fuerte);
-}
-.buscador input:focus-visible {
-  border-color: var(--tinta);
-  box-shadow: var(--sombra-alta);
 }
 
 button {
@@ -263,17 +457,37 @@ button:disabled {
   padding: 15px 28px;
   box-shadow: var(--sombra);
 }
+/* El botón de buscar va pegado adentro del marco del campo, no al lado. */
+.buscador .principal {
+  margin: 5px;
+  padding: 11px 26px;
+  border-radius: var(--radio-chico);
+  box-shadow: none;
+  letter-spacing: 0.02em;
+}
 .principal:hover:not(:disabled) {
   background: var(--tinta-viva);
   border-color: var(--tinta-viva);
 }
 
-/* ---------- filtros ---------------------------------------------------- */
+/* ---------- filtros ----------------------------------------------------
+   Cerrados son un renglón discreto debajo del buscador, no otra tarjeta
+   blanca del mismo tamaño que la de arriba: compitiendo con el campo de
+   búsqueda le robaban el centro de la página. Abiertos sí toman cuerpo de
+   panel, que es cuando hace falta. */
 .filtros {
-  margin-top: 14px;
-  background: var(--panel);
-  border: 1px solid var(--borde);
+  margin: 12px auto 0;
+  max-width: 740px;
+  background: transparent;
+  border: 1px solid transparent;
   border-radius: var(--radio);
+  padding: 0 14px;
+  box-shadow: none;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.filtros[open] {
+  background: var(--panel);
+  border-color: var(--borde);
   padding: 2px 18px;
   box-shadow: var(--sombra);
 }
@@ -404,19 +618,104 @@ button:disabled {
   color: var(--suave);
 }
 
+/* ---------- la pantalla de antes de buscar -----------------------------
+   Reemplaza al renglón de consejo que flotaba solo en medio de la página.
+   Las preguntas son botones de verdad: tocarlas busca. */
+.empezar {
+  margin: 42px auto 0;
+  max-width: 760px;
+  text-align: center;
+}
+.empezar-titulo {
+  margin: 0 0 18px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--suave);
+}
+.ejemplos {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+/* Las preguntas se ven como renglones escritos a mano sobre el papel, no
+   como botones de aplicación: borde fino, fondo del panel, y la comilla
+   angular que en castellano abre una cita. */
+.ejemplo {
+  padding: 10px 16px;
+  font-size: 0.93rem;
+  line-height: 1.35;
+  text-align: start;
+  color: var(--texto);
+  background: var(--panel);
+  border: 1px solid var(--borde);
+  border-radius: 999px;
+  box-shadow: var(--sombra);
+  max-width: 100%;
+}
+.ejemplo::before {
+  content: "«";
+  color: var(--tinta);
+  margin-right: 5px;
+}
+.ejemplo::after {
+  content: "»";
+  color: var(--tinta);
+  margin-left: 5px;
+}
+.ejemplo:hover:not(:disabled) {
+  background: var(--panel);
+  border-color: var(--tinta);
+  box-shadow: var(--sombra-alta);
+}
+.empezar-pie {
+  margin: 22px auto 0;
+  max-width: 48ch;
+  font-size: 0.9rem;
+  color: var(--suave);
+  text-wrap: pretty;
+}
+
 /* ---------- resultados ------------------------------------------------- */
+/* El lomo. Una barra de tinta en el canto de inicio de cada ficha: da el
+   gesto del lomo de un tomo en un estante y, sobre todo, ata visualmente las
+   fichas entre sí cuando hay veinte seguidas. Va en `inset-inline-start`,
+   así acompaña si algún día la página se lee de derecha a izquierda. */
 .carta {
+  position: relative;
   background: var(--panel);
   border: 1px solid var(--borde);
   border-radius: var(--radio);
-  padding: 20px 22px;
+  padding: 20px 22px 20px 26px;
   margin-bottom: 16px;
   box-shadow: var(--sombra);
+  overflow: hidden;
   transition: box-shadow 160ms ease, border-color 160ms ease;
+}
+.carta::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  width: 4px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--tinta) 55%, transparent),
+    color-mix(in oklab, var(--tinta) 18%, transparent)
+  );
 }
 .carta:hover {
   box-shadow: var(--sombra-alta);
   border-color: var(--borde-fuerte);
+}
+.carta:hover::before {
+  background: linear-gradient(
+    180deg,
+    var(--tinta-viva),
+    color-mix(in oklab, var(--tinta) 42%, transparent)
+  );
 }
 .carta h2 {
   margin: 0 0 3px;
@@ -607,11 +906,46 @@ button:disabled {
   .cabecera {
     padding: 36px 0 20px;
   }
+  /* El marco sigue siendo uno solo, pero el botón pasa abajo: con el teclado
+     del teléfono abierto, un botón al costado deja el campo de texto en
+     ciento veinte píxeles. */
   .buscador {
     flex-direction: column;
+    padding: 5px;
   }
-  .principal {
+  .buscador input {
+    padding: 12px 13px;
+    border-radius: var(--radio-chico);
+  }
+  .buscador .principal {
+    margin: 0;
     width: 100%;
+  }
+  /* La foto de fondo no se descarga en teléfonos: es peso y datos para una
+     decoración que en esa pantalla queda tapada por el texto. */
+  body::before {
+    display: none;
+  }
+  .titulo-lat {
+    letter-spacing: 0.14em;
+  }
+  /* Las cifras entran en dos renglones, y entonces la línea separadora de la
+     que queda sola abajo cuelga a su izquierda sin nada antes: se lee como
+     una marca suelta. En pantalla angosta se separan por el espacio y nada
+     más. */
+  .cifras {
+    gap: 6px 20px;
+  }
+  .cifras span + span {
+    border-inline-start: 0;
+    padding-inline-start: 0;
+  }
+  /* Una píldora de un solo renglón se ve bien con los cantos redondos; una de
+     dos renglones, no. En el teléfono ocupan el ancho y casi siempre son de
+     dos, así que vuelven al radio normal. */
+  .ejemplo {
+    width: 100%;
+    border-radius: var(--radio);
   }
   .carta {
     padding: 16px 16px;
@@ -679,8 +1013,18 @@ button:disabled {
   body {
     background: none;
   }
+  /* Ni la foto ni el grano del papel se imprimen: gastan tinta y no aportan
+     nada en una hoja. */
+  body::before,
+  body::after {
+    display: none;
+  }
+  .carta::before {
+    display: none;
+  }
   .salto,
   .buscador,
+  .empezar,
   .filtros,
   .acciones,
   .etiquetas,
