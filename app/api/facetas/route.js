@@ -1,15 +1,15 @@
-import { rpc, tabla } from "../../lib/servicios";
+import { rpc, tabla } from "../../lib/servicios.js";
+import { mensajeParaAfuera, primeraFila } from "../../lib/guardias.js";
 
 export const runtime = "nodejs";
+export const maxDuration = 20;
 // Un minuto. Antes era una hora, y después de cargar cartas nuevas el sitio
 // seguía anunciando el número viejo sin que nada estuviera mal en la base.
 export const revalidate = 60;
 
 /** Las listas contadas por la base, que es la única que las sabe exactas. */
 async function desdeLaBase() {
-  const datos = await rpc("facetas_de_cartas", {});
-  // PostgREST devuelve el json tal cual, o envuelto en un arreglo
-  const f = Array.isArray(datos) ? datos[0] : datos;
+  const f = primeraFila(await rpc("facetas_de_cartas", {}));
   if (!f || typeof f.total !== "number") throw new Error("respuesta rara");
   return { ...f, exactas: true };
 }
@@ -26,16 +26,26 @@ async function comoSePueda() {
     order: "numero.asc",
   });
 
-  const { filas: cartas, total: totalPorCabecera } = await tabla(
+  const { filas: crudas, total: totalPorCabecera } = await tabla(
     "cartas",
     { select: "temas,festividades,anio_gregoriano", limit: "2000" },
     true
   );
 
+  // Las filas que no son objetos se descartan de entrada, una sola vez. Antes
+  // `cartas.map((c) => c.anio_gregoriano)` explotaba con un nulo en la lista,
+  // y el respaldo —que existe justamente para cuando algo anda mal— se caía
+  // con un 500. Lo encontró el banco de pruebas.
+  const cartas = (Array.isArray(crudas) ? crudas : []).filter(
+    (c) => c && typeof c === "object"
+  );
+
   const contar = (campo) => {
     const cuenta = new Map();
     for (const c of cartas) {
-      for (const v of c[campo] || []) cuenta.set(v, (cuenta.get(v) || 0) + 1);
+      for (const v of Array.isArray(c[campo]) ? c[campo] : []) {
+        cuenta.set(v, (cuenta.get(v) || 0) + 1);
+      }
     }
     return [...cuenta.entries()]
       .sort((a, b) => b[1] - a[1])
@@ -76,7 +86,7 @@ export async function GET() {
       return Response.json(respaldo);
     } catch (e) {
       console.error("facetas:", e?.message, e?.detalle || "");
-      return Response.json({ error: String(e?.message || e) }, { status: 500 });
+      return Response.json({ error: mensajeParaAfuera(e) }, { status: 500 });
     }
   }
 }

@@ -109,13 +109,25 @@ html {
      de arriba. */
   scroll-padding-top: 24px;
   scroll-behavior: smooth;
+
+  /* EL COLOR DEL PAPEL VA ACÁ, Y NO EN `body`. NO ES UN DETALLE.
+     Antes estaba en `body`, y `body::before` —la capa del fondo— está en
+     `z-index: -2`, o sea DETRÁS de su propio padre. Con `body` pintado de un
+     color opaco, esa capa quedaba tapada: cargaba la imagen, ocupaba su
+     lugar, y no se veía nada.
+     O sea que el hueco de la foto nunca funcionó. Nadie se dio cuenta porque
+     nunca hubo una foto puesta: la variable valía `none` y una capa invisible
+     con una imagen invisible se ven exactamente igual. Lo encontré poniendo
+     un fondo de prueba y sacándole una foto a la página.
+     Con el color en `html`, se pinta en el lienzo del navegador, la capa del
+     fondo queda por encima de él, y el contenido por encima de los dos. */
+  background: var(--fondo);
 }
 
 html,
 body {
   margin: 0;
   padding: 0;
-  background: var(--fondo);
   color: var(--texto);
   font-family: var(--latina);
   font-size: 16px;
@@ -126,6 +138,10 @@ body {
 }
 
 body {
+  /* SIN FONDO, A PROPÓSITO. El color del papel lo pone `html` (ver arriba).
+     Si acá se vuelve a poner un color, tapa `body::before` y el fondo del
+     sitio desaparece sin que nada parezca roto. */
+  background: transparent;
   overflow-x: hidden;
   position: relative;
   /* Un degradado apenas perceptible: el papel de arriba un poco más claro.
@@ -145,20 +161,46 @@ body {
    Dos capas fijas detrás de todo, que no reciben clics y no entran en el
    orden de lectura: son decoración y nada más.
 
-   ·  `body::before` es **el hueco para la foto del Rebe**. Mientras
-      `--foto-del-rebe` valga `none` no se dibuja nada y la página se ve
-      exactamente igual que sin esta capa. Para ponerla:
+   ·  `body::before` es **el hueco para la imagen de fondo**. Mientras
+      `--fondo-del-sitio` valga `none` no se dibuja nada y la página se ve
+      exactamente igual que sin esta capa.
 
-          1 · guardá la imagen en `public/rebe.jpg` del repo
-          2 · cambiá el renglón de abajo por:
-              --foto-del-rebe: url("/rebe.jpg");
+      ========================================================================
+      ANTES DE PONER UNA FOTO DEL REBE, LEER ESTO
+      ========================================================================
+      Casi todas las fotografías del Rebe que circulan por internet son de
+      **Jewish Educational Media (JEM)** o del Archivo de Lubavitch. No están
+      en dominio público, y JEM no deja pasar el asunto: en 2024 le inició
+      juicio a RebbeDrive por usar su material sin permiso. La foto que usa
+      la Wikipedia está ahí amparada en el «uso legítimo», que es una figura
+      de la Wikipedia y NO se traslada a este sitio.
 
-      No hace falta tocar ninguna otra cosa. Está pensada para que la foto
-      ACOMPAÑE y no compita: va arriba a la derecha, en escala de grises con
-      un velo sepia para que entre en la paleta del papel, con opacidad muy
-      baja, y con una máscara que la desvanece justo donde empieza el texto.
-      Si la imagen no existe, el navegador no dibuja nada y no hay error
-      visible.
+      O sea: bajar una foto de Google y ponerla acá es exponerse de verdad,
+      y encima en un sitio que lleva el nombre del Rebe.
+
+      El camino correcto es pedirla, y existe el formulario para hacerlo:
+          https://jemcentral.org/submit-your-request/
+      Contás qué es el sitio —un buscador de las Igrot, sin fines de lucro—
+      y pedís permiso para una imagen de fondo. Cuando te la den:
+
+          1 · guardá el archivo en `public/rebe.jpg`
+          2 · poné estos dos renglones en el bloque de abajo:
+                --fondo-del-sitio: url("/rebe.jpg");
+                --fondo-opacidad: 0.09;
+          3 · poné el crédito que te pidan en el pie de la página
+
+      MIENTRAS TANTO, hay un fondo que no le pide permiso a nadie: el frente
+      de 770, dibujado a línea acá mismo (no es el calco de ninguna foto). Se
+      enciende así, y VIENE ASÍ DE FÁBRICA:
+                --fondo-del-sitio: var(--dibujo-de-770);
+
+      Para dejar la página sin ningún fondo, `none`.
+
+      En los dos casos la capa está pensada para que la imagen ACOMPAÑE y no
+      compita: va arriba a la derecha, en escala de grises con un velo sepia
+      para entrar en la paleta del papel, con opacidad muy baja y con una
+      máscara que la desvanece justo donde empieza el texto. Si el archivo no
+      existe, el navegador no dibuja nada y no hay ningún error visible.
 
    ·  `body::after` es el grano del papel: dos tramas diagonales cruzadas,
       hechas con degradados, sin ninguna imagen que descargar. Es lo que
@@ -169,16 +211,23 @@ body {
    En impresión tampoco.
    =========================================================================== */
 :root {
-  --foto-del-rebe: none;
-  --foto-opacidad: 0.09;
+  /* El fondo del sitio. `none` = sin fondo. Las dos opciones están arriba. */
+  --fondo-del-sitio: var(--dibujo-de-770);
+  --fondo-opacidad: 0.09;
+
+  /* El frente de 770 dibujado a línea. Va acá adentro, como data URI, para
+     que no haya que subir ningún archivo y para que no se pida nada por red:
+     la política de contenido del sitio dice `img-src 'self' data:`, así que
+     entra sin tocar ninguna otra cosa. */
+  --dibujo-de-770: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0MDAgMzAwIiBmaWxsPSJub25lIgogICAgIHN0cm9rZT0iIzJhMjExOCIgc3Ryb2tlLXdpZHRoPSIyLjIiIHN0cm9rZS1saW5lY2FwPSJzcXVhcmUiIHN0cm9rZS1saW5lam9pbj0ibWl0ZXIiPgogIDwhLS0gNzcwIEVhc3Rlcm4gUGFya3dheSwgZGUgZnJlbnRlLiBEaWJ1am8gZGUgbMOtbmVhIGhlY2hvIGEgbWFubyBhY8OhOiBubyBlcwogICAgICAgZWwgY2FsY28gZGUgbmluZ3VuYSBmb3RvZ3JhZsOtYS4gLS0+CiAgPCEtLSBjdWVycG8gcHJpbmNpcGFsLCBjb24gZWwgaGFzdGlhbCBlbXBpbmFkbyAtLT4KICA8cGF0aCBkPSJNNzAgMjkwIFYxNDggTDE0MCA5NiBMMjEwIDE0OCBWMjkwIFoiLz4KICA8IS0tIGxhIGNoaW1lbmVhLCBhcG95YWRhIGVuIGVsIGZhbGTDs24geSBubyBlbiBlbCBhaXJlIC0tPgogIDxwYXRoIGQ9Ik0xNzggMTI1IFY4NiBoMTcgdjU5Ii8+CiAgPCEtLSBhbGEgZGVyZWNoYSwgbcOhcyBiYWphIC0tPgogIDxwYXRoIGQ9Ik0yMTAgMjkwIFYxNzYgTDI2OCAxMzQgTDMyNiAxNzYgVjI5MCBaIi8+CiAgPCEtLSBsYSBsw61uZWEgZGVsIHN1ZWxvIC0tPgogIDxwYXRoIGQ9Ik00MCAyOTAgSDM2MCIgc3Ryb2tlLXdpZHRoPSIyLjgiLz4KICA8IS0tIGxhcyB0cmVzIHZlbnRhbmFzIGFsdGFzLCBxdWUgc29uIGxvIHF1ZSBoYWNlIHJlY29ub2NpYmxlIGVsIGZyZW50ZSAtLT4KICA8cGF0aCBkPSJNOTIgMjkwIFYxOTggYTE0IDE0IDAgMCAxIDI4IDAgVjI5MCIvPgogIDxwYXRoIGQ9Ik0xMjYgMjkwIFYxOTggYTE0IDE0IDAgMCAxIDI4IDAgVjI5MCIvPgogIDxwYXRoIGQ9Ik0xNjAgMjkwIFYxOTggYTE0IDE0IDAgMCAxIDI4IDAgVjI5MCIvPgogIDxwYXRoIGQ9Ik0xMDYgMjA4IFYyOTAgTTE0MCAyMDggVjI5MCBNMTc0IDIwOCBWMjkwIiBzdHJva2Utd2lkdGg9IjEuMiIvPgogIDxwYXRoIGQ9Ik05MiAyNDIgSDEyMCBNMTI2IDI0MiBIMTU0IE0xNjAgMjQyIEgxODgiIHN0cm9rZS13aWR0aD0iMS4yIi8+CiAgPCEtLSBsYSBidWhhcmRpbGxhIC0tPgogIDxwYXRoIGQ9Ik0xMjAgMTUwIEwxNDAgMTMyIEwxNjAgMTUwIFYxNjggSDEyMCBaIi8+CiAgPHBhdGggZD0iTTEzMyAxNjggVjE1MiBhNyA3IDAgMCAxIDE0IDAgVjE2OCIgc3Ryb2tlLXdpZHRoPSIxLjIiLz4KICA8IS0tIGxhIGVudHJhZGEsIGVuIGVsIG1lZGlvIGRlbCBhbGEgeSBoYXN0YSBlbCBzdWVsbyAtLT4KICA8cGF0aCBkPSJNMjUwIDI5MCBWMjM2IGExOCAxOCAwIDAgMSAzNiAwIFYyOTAiLz4KICA8cGF0aCBkPSJNMjY4IDIyMiBWMjkwIiBzdHJva2Utd2lkdGg9IjEuMiIvPgogIDxwYXRoIGQ9Ik0yNDQgMjM2IEgyOTIiIHN0cm9rZS13aWR0aD0iMS4yIi8+CiAgPCEtLSB5IGxhcyB2ZW50YW5hcyBhIGxvcyBjb3N0YWRvcyBkZSBsYSBlbnRyYWRhLCBtw6FzIGNvcnRhcyAtLT4KICA8cGF0aCBkPSJNMjI0IDI5MCBWMjEyIGgyMCB2NzgiLz4KICA8cGF0aCBkPSJNMjkyIDI5MCBWMjEyIGgyMCB2NzgiLz4KICA8cGF0aCBkPSJNMjM0IDIxMiBWMjkwIE0zMDIgMjEyIFYyOTAiIHN0cm9rZS13aWR0aD0iMS4yIi8+CiAgPHBhdGggZD0iTTIyNCAyNTAgSDI0NCBNMjkyIDI1MCBIMzEyIiBzdHJva2Utd2lkdGg9IjEuMiIvPgo8L3N2Zz4K");
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --foto-opacidad: 0.13;
+    --fondo-opacidad: 0.13;
   }
 }
 :root[data-theme="dark"] {
-  --foto-opacidad: 0.13;
+  --fondo-opacidad: 0.13;
 }
 
 body::before {
@@ -187,11 +236,11 @@ body::before {
   inset: 0;
   z-index: -2;
   pointer-events: none;
-  background-image: var(--foto-del-rebe);
+  background-image: var(--fondo-del-sitio);
   background-repeat: no-repeat;
   background-position: right -4vw top -2vw;
   background-size: min(62vw, 820px) auto;
-  opacity: var(--foto-opacidad);
+  opacity: var(--fondo-opacidad);
   filter: grayscale(1) sepia(0.35) contrast(1.05);
   /* La máscara: entera arriba a la derecha, desvanecida hacia el centro y
      hacia abajo, que es por donde corre el texto. */
@@ -798,8 +847,11 @@ button:disabled {
   /* Más grande que el resto a propósito: una serif hebrea con el mismo cuerpo
      que la latina se ve más chica, y encima esto es texto para leer de
      corrido, no un dato al pasar. */
-  font-size: 1.2rem;
+  /* `--escala-hebrea` la pone la página cuando el lector toca A+ / A−. Vale 1
+     mientras nadie la cambie, así que el tamaño de siempre no se mueve. */
+  font-size: calc(1.2rem * var(--escala-hebrea, 1));
   line-height: 1.95;
+  transition: font-size 120ms ease;
   /* El OCR trae abreviaturas con comillas por todos lados; las ligaduras de
      la tipografía las deforman. */
   font-variant-ligatures: none;
@@ -998,6 +1050,317 @@ button:disabled {
 /* ---------- impresión -------------------------------------------------- */
 /* Una carta se imprime o se guarda en PDF para leerla en papel. Lo que no
    tiene sentido en papel se va: el buscador, los filtros, los botones. */
+/* =========================================================================
+   LO QUE SE AGREGÓ EN LA PASADA DE NOVIEMBRE
+   ========================================================================= */
+
+/* --- SÓLO PARA LECTORES DE PANTALLA ------------------------------------- */
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --- LA PORTADA COMPACTA ------------------------------------------------ */
+/* Cuando ya hay resultados, el título se achica, la regla se acerca y el
+   párrafo de bienvenida y las cifras se van: su trabajo ya está hecho. Todo
+   con una transición, para que se entienda que es la misma portada y no otra
+   página. */
+.cabecera {
+  transition: padding 260ms ease;
+}
+.cabecera.compacta {
+  padding-top: 18px;
+  padding-bottom: 6px;
+}
+.cabecera.compacta .titulo-heb {
+  font-size: clamp(1.9rem, 5vw, 2.6rem);
+  margin-bottom: 2px;
+}
+.cabecera.compacta .titulo-lat {
+  font-size: 0.66rem;
+}
+.cabecera.compacta .cifras,
+.cabecera.compacta .entrada {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cabecera { transition: none; }
+}
+
+/* --- EL INTERRUPTOR DEL TEMA -------------------------------------------- */
+/* Arriba a la derecha, chico y quieto. No tiene que competir con el título
+   hebreo, que es lo primero que hay que mirar al entrar. */
+.mandos {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: -8px;
+}
+/* Se VE. La primera versión era un signo gris claro sobre fondo claro, del
+   tamaño de una pelusa: en la foto de prueba no se distinguía del fondo, y un
+   interruptor que no se encuentra es un interruptor que no existe. Ahora
+   tiene su recuadro, su borde y el signo en color de tinta. */
+.mando {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: 1.05rem;
+  line-height: 1;
+  color: var(--tinta);
+  background: var(--panel);
+  border: 1px solid var(--borde-fuerte);
+  border-radius: 999px;
+  box-shadow: var(--sombra);
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+.mando:hover:not(:disabled) {
+  border-color: var(--tinta);
+  transform: translateY(-1px);
+}
+.mando:active {
+  transform: none;
+}
+
+/* --- EL BUSCADOR PEGADO AL TECHO ---------------------------------------- */
+/* Al bajar, el buscador se queda arriba. En una lista de veinte cartas, tener
+   que volver al principio para cambiar la búsqueda es el viaje más molesto de
+   la página. */
+.buscador.pegado {
+  position: sticky;
+  top: 10px;
+  z-index: 20;
+  margin-top: 14px;
+  background: var(--panel);
+  box-shadow: var(--sombra-alta);
+}
+
+/* --- LAS FICHAS DE LOS FILTROS PUESTOS ---------------------------------- */
+.fichas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 740px;
+  margin: 14px auto 0;
+}
+.ficha {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px 5px 12px;
+  font-size: 0.8rem;
+  font-family: inherit;
+  color: var(--texto);
+  background: var(--panel);
+  border: 1px solid var(--borde-fuerte);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease;
+}
+.ficha:hover:not(:disabled) {
+  border-color: var(--alerta);
+  color: var(--alerta);
+}
+.ficha-que {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--suave);
+}
+.ficha:hover .ficha-que {
+  color: inherit;
+}
+.ficha-x {
+  font-size: 1.05rem;
+  line-height: 1;
+  opacity: 0.55;
+}
+.ficha:hover .ficha-x {
+  opacity: 1;
+}
+.ficha-todo {
+  border-style: dashed;
+  color: var(--suave);
+}
+
+.pie-botones {
+  display: flex;
+  gap: 8px;
+}
+
+/* --- EL HUECO MIENTRAS BUSCA -------------------------------------------- */
+/* Tiene la forma de los resultados que van a venir, a propósito: así la página
+   no salta cuando llegan. */
+.esqueleto {
+  margin-top: 18px;
+}
+.carta.hueso {
+  pointer-events: none;
+}
+.hueso-linea {
+  height: 13px;
+  margin-bottom: 11px;
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    var(--panel-2) 0%,
+    var(--borde) 40%,
+    var(--panel-2) 80%
+  );
+  background-size: 300% 100%;
+  animation: respirar 1.5s ease-in-out infinite;
+}
+.hueso-titulo {
+  height: 20px;
+  width: 52%;
+  margin-bottom: 14px;
+}
+.hueso-meta {
+  height: 10px;
+  width: 38%;
+  margin-bottom: 18px;
+}
+.hueso-corta {
+  width: 72%;
+}
+@keyframes respirar {
+  0% { background-position: 150% 0; }
+  100% { background-position: -150% 0; }
+}
+/* Quien pidió menos movimiento no ve la animación, nada más el hueco. */
+@media (prefers-reduced-motion: reduce) {
+  .hueso-linea {
+    animation: none;
+    background: var(--panel-2);
+  }
+}
+
+/* --- LO QUE COINCIDE CON LA BÚSQUEDA ------------------------------------ */
+/* Un subrayado de tinta en vez de un bloque amarillo: esto es un resumen de
+   una carta del Rebe, no un resaltador de examen. Se nota lo suficiente para
+   encontrarlo con el ojo y lo bastante poco para poder leer el párrafo de
+   corrido. */
+mark.coincide {
+  color: inherit;
+  background: linear-gradient(transparent 62%, var(--tinta-clara) 62%);
+  border-radius: 2px;
+  padding: 0 1px;
+  font-weight: 500;
+  box-decoration-break: clone;
+}
+
+/* --- COPIAR LA CITA ----------------------------------------------------- */
+.copiar.copiado {
+  color: var(--tinta);
+  border-color: var(--tinta);
+}
+
+/* --- LA BARRA DE AVANCE DE LA TRADUCCIÓN -------------------------------- */
+.avance {
+  height: 4px;
+  margin: 14px 0 2px;
+  overflow: hidden;
+  background: var(--panel-2);
+  border-radius: 999px;
+}
+.avance-barra {
+  height: 100%;
+  background: var(--tinta);
+  border-radius: 999px;
+  transition: width 320ms ease;
+}
+
+/* --- EL TAMAÑO DE LA LETRA HEBREA -------------------------------------- */
+.mandos-hebreo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 18px 0 -6px;
+}
+.mandos-hebreo .nota-chica {
+  margin-right: auto;
+}
+.mandos-hebreo button {
+  min-width: 40px;
+  padding: 5px 9px;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- VOLVER ARRIBA ------------------------------------------------------ */
+.volver-arriba {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 30;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: 1.15rem;
+  line-height: 1;
+  color: var(--tinta);
+  background: var(--panel);
+  border: 1px solid var(--borde-fuerte);
+  border-radius: 999px;
+  box-shadow: var(--sombra);
+  cursor: pointer;
+  animation: asomarse 180ms ease;
+}
+.volver-arriba:hover:not(:disabled) {
+  border-color: var(--tinta);
+  box-shadow: var(--sombra-alta);
+}
+@keyframes asomarse {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .volver-arriba { animation: none; }
+}
+
+/* --- EL ATAJO DE TECLADO ------------------------------------------------ */
+kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+  color: var(--texto);
+  background: var(--panel-2);
+  border: 1px solid var(--borde-fuerte);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+}
+
+/* --- CÓMO APARECEN LAS CARTAS ------------------------------------------ */
+/* Una entrada corta y de a una. Sin esto, veinte cartas aparecen de golpe y
+   la página pega un salto; con esto se acomodan. El retraso se corta en la
+   quinta para que las de más abajo no se hagan esperar. */
+.carta:not(.hueso) {
+  animation: entrar 260ms ease both;
+}
+.carta:not(.hueso):nth-child(2) { animation-delay: 30ms; }
+.carta:not(.hueso):nth-child(3) { animation-delay: 60ms; }
+.carta:not(.hueso):nth-child(4) { animation-delay: 90ms; }
+.carta:not(.hueso):nth-child(n + 5) { animation-delay: 110ms; }
+@keyframes entrar {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .carta:not(.hueso) { animation: none; }
+}
+
 @media print {
   :root {
     --fondo: #ffffff;
@@ -1055,5 +1418,21 @@ button:disabled {
   .pie {
     border-top: 1px solid #cccccc;
     font-size: 8pt;
+  }
+  /* Los mandos no se imprimen: en papel no se puede tocar nada. */
+  .mandos,
+  .fichas,
+  .mandos-hebreo,
+  .volver-arriba,
+  .esqueleto,
+  .avance {
+    display: none !important;
+  }
+  .carta:not(.hueso) {
+    animation: none;
+  }
+  mark.coincide {
+    background: none;
+    font-weight: 600;
   }
 }

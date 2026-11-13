@@ -1,6 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import {
+  FILTROS_VACIOS,
+  aLaUrl,
+  citaDeLaCarta,
+  desdeLaUrl,
+  esLaMisma,
+  palabrasParaResaltar,
+  partirResaltando,
+} from "./lib/enlaces.js";
 
 const IDIOMAS = [
   { valor: "es", nombre: "Español" },
@@ -34,9 +44,7 @@ function agruparTemas(temas, elegido = "", desde = TEMAS_FRECUENTES_DESDE) {
   const lista = (temas || []).filter((t) => t && t.valor);
   const estaElegido = lista.some((t) => t.valor === elegido);
   const completa =
-    elegido && !estaElegido
-      ? [...lista, { valor: elegido, n: null, suelto: true }]
-      : lista;
+    elegido && !estaElegido ? [...lista, { valor: elegido, n: null, suelto: true }] : lista;
 
   const frecuentes = completa.filter((t) => (t.n || 0) >= desde);
   const especificos = completa.filter((t) => (t.n || 0) < desde);
@@ -47,10 +55,7 @@ function agruparTemas(temas, elegido = "", desde = TEMAS_FRECUENTES_DESDE) {
   }
   return [
     { etiqueta: "Temas más frecuentes", temas: frecuentes },
-    {
-      etiqueta: `Más específicos (menos de ${desde} cartas)`,
-      temas: especificos,
-    },
+    { etiqueta: `Más específicos (menos de ${desde} cartas)`, temas: especificos },
   ];
 }
 
@@ -72,6 +77,7 @@ function fechaLegible(iso) {
 // a algo que diga qué hacer.
 function mensajeAmable(crudo) {
   const t = String(crudo || "");
+  if (/muchas búsquedas|muchas traducciones/i.test(t)) return t;
   if (/429|quota|RESOURCE_EXHAUSTED/i.test(t))
     return "Se agotó la cuota gratis de Gemini por hoy. Probá de nuevo más tarde.";
   // 503 es "estoy sobrecargado", no "algo está mal": se arregla solo
@@ -86,12 +92,17 @@ function mensajeAmable(crudo) {
       "suele salir bien al segundo intento.";
   if (/faltan SUPABASE/i.test(t))
     return "Faltan las variables SUPABASE_URL y SUPABASE_KEY en Vercel.";
+  if (/no contestó en \d+ segundos/i.test(t))
+    return "La base no contestó a tiempo. Puede estar durmiendo: probá de nuevo " +
+      "en unos segundos y suele despertarse.";
   if (/Supabase 4|Supabase 5/i.test(t))
     return "La base no respondió bien. Fijate que el esquema SQL esté corrido y la clave sea la anon.";
   if (/a tiempo|tardó demasiado|tard[oó]/i.test(t))
     return "Gemini tardó más de lo que el servidor puede esperar. Probá de nuevo: " +
       "los modelos gratuitos van lentos a ratos.";
   if (/el servidor cortó/i.test(t)) return t;
+  if (/demasiado grande|no es JSON válido|viene vacío/i.test(t))
+    return "El pedido salió mal armado. Recargá la página y probá de nuevo.";
   return t;
 }
 
@@ -112,7 +123,7 @@ async function leerJson(r) {
     if (r.status === 504 || /an error occurred|timeout|FUNCTION_INVOCATION/i.test(cuerpo)) {
       throw new Error(
         "el servidor cortó el pedido por tiempo. Con cartas largas pasa: " +
-        "probá de nuevo, o traducí la carta por partes."
+          "probá de nuevo, o traducí la carta por partes."
       );
     }
     throw new Error(`el servidor respondió algo que no es JSON (${r.status}): ${pista}`);
@@ -207,14 +218,108 @@ function nombreDeTomo(libro) {
   return libro?.titulo || libro?.id || "";
 }
 
-const FILTROS_VACIOS = {
-  libro: "",
-  tema: "",
-  festividad: "",
-  anioDesde: "",
-  anioHasta: "",
+/** Guarda algo en el navegador sin que un fallo rompa la página.
+ *
+ *  En una ventana privada, con las cookies bloqueadas o en algunos modos de
+ *  iOS, `localStorage` no está o lanza al tocarlo. Nada de lo que se guarda
+ *  acá es importante —el tema elegido, el tamaño de la letra hebrea—, así que
+ *  si no se puede guardar, no se guarda y listo.
+ */
+const recordar = {
+  leer(clave, porOmision) {
+    try {
+      const v = window.localStorage.getItem(clave);
+      return v === null ? porOmision : v;
+    } catch {
+      return porOmision;
+    }
+  },
+  escribir(clave, valor) {
+    try {
+      window.localStorage.setItem(clave, String(valor));
+    } catch {
+      /* no se puede guardar: no importa */
+    }
+  },
 };
 
+// ===========================================================================
+//  EL TEMA: CLARO, OSCURO O EL DEL SISTEMA
+//
+//  La hoja de estilos ya sabía hacer los tres —tiene las variables para
+//  `prefers-color-scheme: dark` y para `[data-theme]`— pero no había ningún
+//  interruptor que pusiera ese atributo. O sea que el modo oscuro estaba
+//  escrito y era inalcanzable: lo decidía el sistema operativo y el visitante
+//  no podía elegir. En un sitio para leer textos largos, eso lo decide el que
+//  lee, no la computadora.
+// ===========================================================================
+const TEMAS = [
+  { valor: "auto", nombre: "Según el sistema", icono: "◐" },
+  { valor: "light", nombre: "Claro", icono: "☀" },
+  { valor: "dark", nombre: "Oscuro", icono: "☾" },
+];
+
+function useTema() {
+  // Arranca en "auto" SIEMPRE, aunque haya algo guardado: lo que se lee del
+  // navegador no existe al renderizar en el servidor, y usarlo en el primer
+  // dibujo haría que React se queje de que el HTML no coincide.
+  const [tema, setTema] = useState("auto");
+  const [listo, setListo] = useState(false);
+
+  useEffect(() => {
+    const guardado = recordar.leer("igrot-tema", "auto");
+    if (TEMAS.some((t) => t.valor === guardado)) setTema(guardado);
+    setListo(true);
+  }, []);
+
+  useEffect(() => {
+    if (!listo) return;
+    const raiz = document.documentElement;
+    if (tema === "auto") raiz.removeAttribute("data-theme");
+    else raiz.setAttribute("data-theme", tema);
+    recordar.escribir("igrot-tema", tema);
+  }, [tema, listo]);
+
+  return [tema, setTema];
+}
+
+// ===========================================================================
+//  EL TAMAÑO DE LA LETRA HEBREA
+//
+//  El hebreo del corpus sale de un OCR y viene lleno de abreviaturas con
+//  comillas. A un tamaño chico, `אי"א` y `איי א` se parecen demasiado. Quien
+//  lee en serio necesita agrandarlo, y quien mira de paso no.
+//
+//  Es la clase de cosa que un lector de textos rabínicos espera encontrar y
+//  que no se puede resolver con el zoom del navegador, porque el zoom agranda
+//  todo y descoloca la página.
+// ===========================================================================
+const TAMAÑOS_HEBREOS = [1, 1.15, 1.35, 1.6];
+
+function useTamañoHebreo() {
+  const [paso, setPaso] = useState(0);
+
+  useEffect(() => {
+    const n = Number(recordar.leer("igrot-hebreo", "0"));
+    if (Number.isInteger(n) && n >= 0 && n < TAMAÑOS_HEBREOS.length) setPaso(n);
+  }, []);
+
+  // `cuanto` es un salto (+1 o −1), no un destino. Es la diferencia que
+  // importa: con un destino, dos clics rápidos calculaban los dos sobre el
+  // mismo valor viejo —el que el componente tenía al dibujarse— y el segundo
+  // no hacía nada. Se veía como que el botón «A+» se trababa.
+  const cambiar = useCallback((cuanto) => {
+    setPaso((actual) => {
+      const n = Math.min(Math.max(actual + cuanto, 0), TAMAÑOS_HEBREOS.length - 1);
+      recordar.escribir("igrot-hebreo", n);
+      return n;
+    });
+  }, []);
+
+  return [TAMAÑOS_HEBREOS[paso], paso, cambiar];
+}
+
+// ===========================================================================
 export default function Pagina() {
   const [consulta, setConsulta] = useState("");
   const [filtros, setFiltros] = useState(FILTROS_VACIOS);
@@ -231,7 +336,23 @@ export default function Pagina() {
   // <details open={...}> no alcanza: React lo vuelve a imponer en cada
   // re-render y el panel se cerraba solo mientras lo estabas usando.
   const [filtrosAbiertos, setFiltrosAbiertos] = useState(false);
+  // Qué carta viene abierta en la dirección, para abrirla sola al entrar.
+  const [cartaDelEnlace, setCartaDelEnlace] = useState("");
+  const [arriba, setArriba] = useState(true);
+
+  const [tema, setTema] = useTema();
+  const [tamañoHebreo, pasoHebreo, cambiarTamañoHebreo] = useTamañoHebreo();
+
   const cajaDeTexto = useRef(null);
+  // Para no volver a lanzar la búsqueda cuando el cambio de dirección lo
+  // provocamos nosotros mismos.
+  const nosotrosCambiamosLaUrl = useRef(false);
+
+  // Las palabras a resaltar salen de la búsqueda QUE SE HIZO, no de lo que hay
+  // escrito en la caja: si no, al borrar la caja se apagaría el resaltado de
+  // los resultados que están en pantalla.
+  const [consultaHecha, setConsultaHecha] = useState("");
+  const palabras = useMemo(() => palabrasParaResaltar(consultaHecha), [consultaHecha]);
 
   useEffect(() => {
     fetch("/api/facetas")
@@ -240,44 +361,105 @@ export default function Pagina() {
       .catch((e) => setFacetas({ error: String(e) }));
   }, []);
 
-  const hayFiltros = useMemo(
-    () => Object.values(filtros).some((v) => v !== ""),
-    [filtros]
+  const hayFiltros = useMemo(() => Object.values(filtros).some((v) => v !== ""), [filtros]);
+
+  /** Escribe la búsqueda en la dirección del navegador.
+   *
+   *  `pushState` cuando es una búsqueda nueva, para que el botón «atrás»
+   *  vuelva a la anterior. `replaceState` cuando sólo cambió algo accesorio
+   *  —qué carta está abierta— porque llenar el historial con eso hace que el
+   *  botón «atrás» deje de servir para lo que la gente espera.
+   */
+  const escribirLaUrl = useCallback((f, texto, carta, nueva) => {
+    if (typeof window === "undefined") return;
+    const url = `${window.location.pathname}${aLaUrl(f, texto, carta)}`;
+    nosotrosCambiamosLaUrl.current = true;
+    if (nueva) window.history.pushState(null, "", url);
+    else window.history.replaceState(null, "", url);
+  }, []);
+
+  const buscar = useCallback(
+    async function buscar(filtrosUsados, textoUsado, opciones = {}) {
+      const { escribir = true, nueva = true, carta = "" } = opciones;
+      const hayTexto = Boolean(String(textoUsado || "").trim());
+      const hayAlgunFiltro = Object.values(filtrosUsados || {}).some((v) => v !== "");
+
+      if (!hayTexto && !hayAlgunFiltro) {
+        setError({ texto: "Escribí algo o elegí al menos un filtro." });
+        setResultados(null);
+        return;
+      }
+
+      setBuscando(true);
+      setError(null);
+      setAviso(null);
+      if (escribir) escribirLaUrl(filtrosUsados, textoUsado, carta, nueva);
+
+      try {
+        const r = await fetch("/api/buscar", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            consulta: textoUsado,
+            filtros: filtrosUsados,
+            limite: POR_PAGINA,
+          }),
+        });
+        const datos = await leerJson(r);
+        if (datos.error) throw new Error(datos.error);
+        setResultados(datos.resultados || []);
+        setTotal(datos.total ?? (datos.resultados || []).length);
+        setPaginable(datos.paginable !== false);
+        setAviso(datos.aviso || null);
+        setConsultaHecha(String(textoUsado || ""));
+      } catch (e) {
+        setError({ texto: mensajeAmable(e.message || e), detalle: String(e.message || e) });
+        setResultados(null);
+        setTotal(0);
+      } finally {
+        setBuscando(false);
+      }
+    },
+    [escribirLaUrl]
   );
 
-  async function buscar(filtrosUsados = filtros, textoUsado = consulta) {
-    if (!textoUsado.trim() && !Object.values(filtrosUsados).some((v) => v !== "")) {
-      setError({ texto: "Escribí algo o elegí al menos un filtro." });
-      setResultados(null);
-      return;
-    }
-    setBuscando(true);
-    setError(null);
-    setAviso(null);
-    try {
-      const r = await fetch("/api/buscar", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          consulta: textoUsado,
-          filtros: filtrosUsados,
-          limite: POR_PAGINA,
-        }),
-      });
-      const datos = await leerJson(r);
-      if (datos.error) throw new Error(datos.error);
-      setResultados(datos.resultados || []);
-      setTotal(datos.total ?? (datos.resultados || []).length);
-      setPaginable(datos.paginable !== false);
-      setAviso(datos.aviso || null);
-    } catch (e) {
-      setError({ texto: mensajeAmable(e.message || e), detalle: String(e.message || e) });
-      setResultados(null);
-      setTotal(0);
-    } finally {
-      setBuscando(false);
-    }
-  }
+  /** AL ENTRAR: si la dirección trae una búsqueda, hacerla.
+   *
+   *  Esto es lo que hace que un enlace compartido funcione, que recargar no
+   *  pierda nada y que el botón «atrás» del navegador vuelva a los
+   *  resultados en vez de irse del sitio.
+   */
+  useEffect(() => {
+    const aplicar = (busqueda, { escribir }) => {
+      const leido = desdeLaUrl(busqueda);
+      setConsulta(leido.consulta);
+      setFiltros(leido.filtros);
+      setCartaDelEnlace(leido.carta);
+      // El panel de filtros NO se abre solo. Antes sí, y eso empujaba los
+      // resultados media pantalla para abajo justo en el caso que más
+      // importa: el de alguien que abre un enlace compartido. Las fichas de
+      // arriba ya dicen qué filtros están puestos, así que abrir el panel
+      // entero no agrega nada y tapa lo que se vino a ver.
+      if (leido.hayAlgo) {
+        buscar(leido.filtros, leido.consulta, { escribir, nueva: false, carta: leido.carta });
+      } else {
+        setResultados(null);
+        setConsultaHecha("");
+      }
+    };
+
+    aplicar(window.location.search, { escribir: false });
+
+    // El botón «atrás» y el «adelante» del navegador.
+    const alVolver = () => {
+      if (nosotrosCambiamosLaUrl.current) {
+        nosotrosCambiamosLaUrl.current = false;
+      }
+      aplicar(window.location.search, { escribir: false });
+    };
+    window.addEventListener("popstate", alVolver);
+    return () => window.removeEventListener("popstate", alVolver);
+  }, [buscar]);
 
   /** Trae las siguientes y las agrega abajo, sin perder las que ya están. */
   async function traerMas() {
@@ -307,6 +489,26 @@ export default function Pagina() {
     setFiltros((f) => ({ ...f, [campo]: valor }));
   }
 
+  /** Saca un filtro y vuelve a buscar en el acto.
+   *
+   *  Es lo que hacen las fichas de arriba de los resultados. Antes, para
+   *  quitar un filtro había que abrir el panel, encontrarlo y ponerlo en
+   *  «todos»: tres pasos para deshacer uno.
+   */
+  function quitarFiltro(campo) {
+    const nuevos = { ...filtros, [campo]: "" };
+    // Los años van de a dos: quitar uno solo deja una búsqueda rara.
+    if (campo === "anios") {
+      nuevos.anioDesde = "";
+      nuevos.anioHasta = "";
+    }
+    setFiltros(nuevos);
+    const quedaAlgo =
+      Boolean(consulta.trim()) || Object.values(nuevos).some((v) => v !== "");
+    if (quedaAlgo) buscar(nuevos, consulta);
+    else limpiar();
+  }
+
   // Al tocar una etiqueta de tema se busca ese tema directamente.
   function buscarTema(tema) {
     const nuevos = { ...FILTROS_VACIOS, tema };
@@ -332,27 +534,98 @@ export default function Pagina() {
     setConsulta("");
     setResultados(null);
     setError(null);
+    setAviso(null);
+    setConsultaHecha("");
+    escribirLaUrl(FILTROS_VACIOS, "", "", true);
     cajaDeTexto.current?.focus();
   }
+
+  /** Atajos de teclado.
+   *
+   *  `/` para ir a la caja de búsqueda es la convención de todos los
+   *  buscadores, y en un sitio donde se busca mucho ahorra el viaje al mouse.
+   *  `Escape` sale de la caja. Los dos se desactivan si ya estás escribiendo
+   *  en algún lado, porque si no es imposible escribir una barra.
+   */
+  useEffect(() => {
+    const alTeclear = (e) => {
+      const donde = e.target?.tagName;
+      const escribiendo =
+        donde === "INPUT" || donde === "TEXTAREA" || donde === "SELECT" || e.target?.isContentEditable;
+      if (e.key === "/" && !escribiendo && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        cajaDeTexto.current?.focus();
+        cajaDeTexto.current?.select();
+      }
+      if (e.key === "Escape" && donde === "INPUT") cajaDeTexto.current?.blur();
+    };
+    window.addEventListener("keydown", alTeclear);
+    return () => window.removeEventListener("keydown", alTeclear);
+  }, []);
+
+  // Para el botón de volver arriba y para que el buscador se pegue al techo.
+  useEffect(() => {
+    const alRodar = () => setArriba(window.scrollY < 400);
+    alRodar();
+    window.addEventListener("scroll", alRodar, { passive: true });
+    return () => window.removeEventListener("scroll", alRodar);
+  }, []);
+
+  /** Las fichas de los filtros puestos, con su nombre legible. */
+  const fichas = useMemo(() => {
+    const f = [];
+    if (filtros.libro) {
+      const l = (facetas?.libros || []).find((x) => x.id === filtros.libro);
+      // Sólo el número: la ficha ya lleva la palabra «Tomo» en su etiqueta, y
+      // `nombreDeTomo` devuelve «Tomo 13», así que se leía «TomoTomo 13».
+      f.push({
+        campo: "libro",
+        que: "Tomo",
+        valor: l?.numero ? String(l.numero) : l?.titulo || filtros.libro,
+      });
+    }
+    if (filtros.tema) f.push({ campo: "tema", que: "Tema", valor: filtros.tema, rtl: true });
+    if (filtros.festividad)
+      f.push({ campo: "festividad", que: "Fecha", valor: filtros.festividad });
+    if (filtros.anioDesde || filtros.anioHasta) {
+      f.push({
+        campo: "anios",
+        que: "Años",
+        valor:
+          filtros.anioDesde && filtros.anioHasta
+            ? `${filtros.anioDesde}–${filtros.anioHasta}`
+            : filtros.anioDesde
+            ? `desde ${filtros.anioDesde}`
+            : `hasta ${filtros.anioHasta}`,
+      });
+    }
+    return f;
+  }, [filtros, facetas]);
 
   return (
     <div className="envoltorio">
       {/* LA PORTADA.
-          Antes era un `<h1>` que mezclaba el hebreo y el castellano en un
-          renglón («אגרות קודש · Buscador») y abajo un párrafo. Se leía como un
-          marcador de posición. Ahora está armada como la portada de un sefer:
-          el nombre hebreo solo y grande, una regla, y debajo de qué se trata.
+          Armada como la portada de un sefer: el nombre hebreo solo y grande,
+          una regla, y debajo de qué se trata.
 
-          Y las cifras no están escritas a mano: salen de `facetas`, que es lo
+          Las cifras no están escritas a mano: salen de `facetas`, que es lo
           que la base contestó hace un minuto. Un número escrito acá quedaría
           viejo con la primera carga y nadie se enteraría. */}
-      <header className="cabecera">
+      {/* LA PORTADA SE ACHICA CUANDO YA HAY RESULTADOS.
+          Entera ocupa la primera pantalla completa, que está bien al entrar:
+          es la portada de un sefer y dice de qué se trata. Pero cuando alguien
+          abre un enlace compartido con una búsqueda hecha, esa misma portada
+          hace que no se vea NI UN resultado sin bajar. Ahí lo que importa son
+          las cartas, no el título. */}
+      <header className={resultados === null && !buscando ? "cabecera" : "cabecera compacta"}>
+        <div className="mandos">
+          <TemaElegido tema={tema} setTema={setTema} />
+        </div>
+
         <h1 className="titulo-heb" lang="he" dir="rtl">
           אגרות קודש
         </h1>
-        <p className="titulo-lat">
-          Buscador de las cartas del Rebe de Lubavitch
-        </p>
+        <p className="titulo-lat">Buscador de las cartas del Rebe de Lubavitch</p>
 
         {facetas && !facetas.error && (
           <p className="cifras">
@@ -377,16 +650,16 @@ export default function Pagina() {
         )}
 
         <p className="entrada">
-          Preguntá en castellano lo que buscás: la búsqueda entiende el
-          sentido, no hace falta acertar las palabras.
+          Preguntá en castellano lo que buscás: la búsqueda entiende el sentido,
+          no hace falta acertar las palabras.
         </p>
       </header>
 
       <form
-        className="buscador"
+        className={arriba ? "buscador" : "buscador pegado"}
         onSubmit={(e) => {
           e.preventDefault();
-          buscar();
+          buscar(filtros, consulta);
         }}
       >
         <input
@@ -396,11 +669,39 @@ export default function Pagina() {
           onChange={(e) => setConsulta(e.target.value)}
           placeholder="por ejemplo: cartas sobre la educación de los hijos"
           aria-label="Qué buscás"
+          enterKeyHint="search"
         />
         <button type="submit" className="principal" disabled={buscando}>
           {buscando ? "Buscando…" : "Buscar"}
         </button>
       </form>
+
+      {/* LAS FICHAS DE LOS FILTROS PUESTOS.
+          Antes, saber qué filtros estaban activos pedía abrir el panel, y
+          quitar uno pedía abrirlo, encontrarlo y ponerlo en «todos»: tres
+          pasos para deshacer uno. Acá se ven y se quitan de un toque. */}
+      {fichas.length > 0 && (
+        <div className="fichas" aria-label="Filtros puestos">
+          {fichas.map((f) => (
+            <button
+              key={f.campo}
+              type="button"
+              className="ficha"
+              onClick={() => quitarFiltro(f.campo)}
+              title={`Quitar el filtro de ${f.que.toLowerCase()}`}
+            >
+              <span className="ficha-que">{f.que}</span>
+              {f.rtl ? <bdi dir="rtl">{f.valor}</bdi> : f.valor}
+              <span className="ficha-x" aria-hidden="true">
+                ×
+              </span>
+            </button>
+          ))}
+          <button type="button" className="ficha ficha-todo" onClick={limpiar}>
+            Limpiar todo
+          </button>
+        </div>
+      )}
 
       <details
         className="filtros"
@@ -437,7 +738,7 @@ export default function Pagina() {
               onChange={(e) => cambiar("tema", e.target.value)}
             >
               <option value="">todos</option>
-              {agruparTemas(facetas?.temas, filtros.tema).map((g, i) =>
+              {agruparTemas(facetas?.temas, filtros.tema).map((g) =>
                 g.etiqueta ? (
                   <optgroup key={g.etiqueta} label={g.etiqueta}>
                     {g.temas.map((t) => (
@@ -503,100 +804,209 @@ export default function Pagina() {
             {facetas?.error
               ? "No pude leer los filtros desde la base."
               : facetas
-              ? `${facetas.total} carta${facetas.total === 1 ? "" : "s"} en la base` +
-                (facetas.exactas === false
-                  ? " · los números de cada tema son aproximados"
-                  : "")
+              ? `${Number(facetas.total || 0).toLocaleString("es-AR")} carta${
+                  facetas.total === 1 ? "" : "s"
+                } en la base` +
+                (facetas.exactas === false ? " · los números de cada tema son aproximados" : "")
               : "Cargando filtros…"}
           </span>
-          <button type="button" onClick={limpiar}>
-            Limpiar todo
-          </button>
+          <div className="pie-botones">
+            <button type="button" onClick={() => buscar(filtros, consulta)}>
+              Aplicar
+            </button>
+            <button type="button" onClick={limpiar}>
+              Limpiar todo
+            </button>
+          </div>
         </div>
       </details>
 
       <main id="resultados">
-      {error && <Problema {...error} />}
+        {error && <Problema {...error} />}
 
-      {aviso && !error && <p className="aviso">{aviso}</p>}
+        {aviso && !error && <p className="aviso">{aviso}</p>}
 
-      {resultados !== null && !error && (
-        <p className="conteo">
-          {resultados.length === 0
-            ? "Ninguna carta coincide."
-            : total > resultados.length
-            ? `${total} cartas · mostrando las primeras ${resultados.length}`
-            : `${resultados.length} carta${resultados.length === 1 ? "" : "s"}`}
-        </p>
-      )}
+        {/* MIENTRAS BUSCA.
+            Antes la pantalla quedaba igual que estaba y lo único que cambiaba
+            era la palabra del botón. En un teléfono eso no se ve, y la
+            búsqueda semántica tarda uno o dos segundos: parecía que el toque
+            no había entrado. */}
+        {buscando && <Esqueleto />}
 
-      {resultados?.map((carta) => (
-        <Resultado
-          key={carta.id}
-          carta={carta}
-          libros={facetas?.libros || []}
-          alTocarTema={buscarTema}
-        />
-      ))}
-
-      {resultados !== null && resultados.length > 0 && total > resultados.length && (
-        <div className="traer-mas">
-          {paginable ? (
-            <button type="button" onClick={traerMas} disabled={trayendoMas}>
-              {trayendoMas
-                ? "Trayendo…"
-                : `Ver ${Math.min(POR_PAGINA, total - resultados.length)} más`}
-            </button>
-          ) : (
-            <p className="nota-chica">
-              Para ver las {total - resultados.length} restantes hay que correr
-              el SQL de los conteos en Supabase.
-            </p>
-          )}
-        </div>
-      )}
-
-      {/* LA PANTALLA VACÍA.
-          Antes era un renglón de consejo flotando en una tarjeta, y debajo
-          medio metro de página en blanco. Era el lugar donde más se notaba
-          que no había nada que mirar.
-
-          Ahora son preguntas de verdad, que se pueden tocar. Sirven para dos
-          cosas a la vez: llenan el hueco y enseñan **cómo** se le pregunta a
-          este buscador, que no es por palabras sueltas sino por sentido. Es
-          la diferencia entre decir «preguntá en castellano» y mostrarlo. */}
-      {resultados === null && !error && (
-        <div className="empezar">
-          <p className="empezar-titulo">Probá con una pregunta entera</p>
-          <div className="ejemplos">
-            {EJEMPLOS.map((e) => (
-              <button
-                key={e}
-                type="button"
-                className="ejemplo"
-                onClick={() => buscarEjemplo(e)}
-              >
-                {e}
-              </button>
-            ))}
-          </div>
-          <p className="empezar-pie">
-            O abrí los filtros y elegí un tomo, un tema, una festividad o un
-            año.
+        {!buscando && resultados !== null && !error && (
+          <p className="conteo">
+            {resultados.length === 0 ? (
+              "Ninguna carta coincide."
+            ) : total > resultados.length ? (
+              <>
+                <b>{total.toLocaleString("es-AR")}</b> cartas · mostrando las primeras{" "}
+                {resultados.length}
+              </>
+            ) : (
+              <>
+                <b>{resultados.length}</b> carta{resultados.length === 1 ? "" : "s"}
+              </>
+            )}
           </p>
-        </div>
-      )}
+        )}
+
+        {!buscando &&
+          resultados?.map((carta) => (
+            <Resultado
+              key={carta.id}
+              carta={carta}
+              libros={facetas?.libros || []}
+              alTocarTema={buscarTema}
+              palabras={palabras}
+              tamañoHebreo={tamañoHebreo}
+              pasoHebreo={pasoHebreo}
+              cambiarTamañoHebreo={cambiarTamañoHebreo}
+              abrirSola={carta.id === cartaDelEnlace}
+              alAbrir={(id, abierta) =>
+                escribirLaUrl(filtros, consultaHecha, abierta ? id : "", false)
+              }
+            />
+          ))}
+
+        {!buscando &&
+          resultados !== null &&
+          resultados.length > 0 &&
+          total > resultados.length && (
+            <div className="traer-mas">
+              {paginable ? (
+                <button type="button" onClick={traerMas} disabled={trayendoMas}>
+                  {trayendoMas
+                    ? "Trayendo…"
+                    : `Ver ${Math.min(POR_PAGINA, total - resultados.length)} más`}
+                </button>
+              ) : (
+                <p className="nota-chica">
+                  Para ver las {total - resultados.length} restantes hay que correr el SQL de
+                  los conteos en Supabase.
+                </p>
+              )}
+            </div>
+          )}
+
+        {/* LA PANTALLA VACÍA.
+            Preguntas de verdad, que se pueden tocar. Sirven para dos cosas a
+            la vez: llenan el hueco y enseñan **cómo** se le pregunta a este
+            buscador, que no es por palabras sueltas sino por sentido. Es la
+            diferencia entre decir «preguntá en castellano» y mostrarlo. */}
+        {!buscando && resultados === null && !error && (
+          <div className="empezar">
+            <p className="empezar-titulo">Probá con una pregunta entera</p>
+            <div className="ejemplos">
+              {EJEMPLOS.map((e) => (
+                <button key={e} type="button" className="ejemplo" onClick={() => buscarEjemplo(e)}>
+                  {e}
+                </button>
+              ))}
+            </div>
+            <p className="empezar-pie">
+              O abrí los filtros y elegí un tomo, un tema, una festividad o un año.
+              <br />
+              <span className="nota-chica">
+                Atajo: apretá <kbd>/</kbd> en cualquier momento para volver a la caja de
+                búsqueda.
+              </span>
+            </p>
+          </div>
+        )}
       </main>
 
+      {!arriba && (
+        <button
+          type="button"
+          className="volver-arriba"
+          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+          title="Volver arriba"
+          aria-label="Volver arriba"
+        >
+          ↑
+        </button>
+      )}
+
       <footer className="pie">
-        Los textos son el OCR de los tomos originales: pueden tener errores de
-        lectura. Ante la duda, mirá la página impresa.
+        Los textos son el OCR de los tomos originales: pueden tener errores de lectura. Ante la
+        duda, mirá la página impresa.
       </footer>
     </div>
   );
 }
 
-function Resultado({ carta, libros, alTocarTema }) {
+/** El interruptor del tema, en tres estados. */
+function TemaElegido({ tema, setTema }) {
+  const actual = TEMAS.find((t) => t.valor === tema) || TEMAS[0];
+  function siguiente() {
+    const i = TEMAS.findIndex((t) => t.valor === tema);
+    setTema(TEMAS[(i + 1) % TEMAS.length].valor);
+  }
+  return (
+    <button
+      type="button"
+      className="mando"
+      onClick={siguiente}
+      title={`Tema: ${actual.nombre}. Tocar para cambiar.`}
+      aria-label={`Tema: ${actual.nombre}. Tocar para cambiar.`}
+    >
+      <span aria-hidden="true">{actual.icono}</span>
+    </button>
+  );
+}
+
+/** El hueco que se muestra mientras la búsqueda viaja.
+ *
+ *  Tiene la forma de los resultados que van a venir, a propósito: así la
+ *  página no salta cuando llegan.
+ */
+function Esqueleto() {
+  return (
+    <div className="esqueleto" aria-live="polite" aria-busy="true">
+      <span className="sr">Buscando…</span>
+      {[0, 1, 2].map((i) => (
+        <article className="carta hueso" key={i} aria-hidden="true">
+          <div className="hueso-linea hueso-titulo" />
+          <div className="hueso-linea hueso-meta" />
+          <div className="hueso-linea" />
+          <div className="hueso-linea hueso-corta" />
+        </article>
+      ))}
+    </div>
+  );
+}
+
+/** Un texto con lo buscado resaltado.
+ *
+ *  Devuelve nodos de React, no HTML: no hay ni un `dangerouslySetInnerHTML`
+ *  en todo el proyecto, así que un resumen que contuviera etiquetas se
+ *  muestra como texto, que es lo que es.
+ */
+function Resaltado({ texto, palabras }) {
+  const pedazos = useMemo(() => partirResaltando(texto, palabras), [texto, palabras]);
+  if (pedazos.length === 1 && !pedazos[0].resaltado) return pedazos[0].texto;
+  return pedazos.map((p, i) =>
+    p.resaltado ? (
+      <mark key={i} className="coincide">
+        {p.texto}
+      </mark>
+    ) : (
+      <span key={i}>{p.texto}</span>
+    )
+  );
+}
+
+function Resultado({
+  carta,
+  libros,
+  alTocarTema,
+  palabras,
+  tamañoHebreo,
+  pasoHebreo,
+  cambiarTamañoHebreo,
+  abrirSola,
+  alAbrir,
+}) {
   const [abierta, setAbierta] = useState(false);
   const [detalle, setDetalle] = useState(null);
   const [idioma, setIdioma] = useState("es");
@@ -610,19 +1020,83 @@ function Resultado({ carta, libros, alTocarTema }) {
   const [traduciendo, setTraduciendo] = useState(false);
   const [avance, setAvance] = useState(null);
   const [fallo, setFallo] = useState(null);
+  const [copiado, setCopiado] = useState(false);
+  const mio = useRef(null);
 
   const libro = libros.find((l) => l.id === carta.libro_id);
+
+  /** Trae los datos que la búsqueda no devuelve: fecha hebrea tal como está
+   *  impresa, lugar, páginas, encabezado. Devuelve lo que trajo, para que
+   *  quien lo necesite —la cita— pueda esperarlo. */
+  const traerDetalle = useCallback(async () => {
+    if (detalle) return detalle;
+    try {
+      const d = await fetch(`/api/carta?id=${encodeURIComponent(carta.id)}`).then(leerJson);
+      if (d.carta) {
+        setDetalle(d.carta);
+        return d.carta;
+      }
+    } catch {
+      /* la carta se muestra igual con lo que trajo la búsqueda */
+    }
+    return null;
+  }, [carta.id, detalle]);
 
   function abrir() {
     const nuevo = !abierta;
     setAbierta(nuevo);
-    if (nuevo && !detalle) {
-      fetch(`/api/carta?id=${encodeURIComponent(carta.id)}`)
-        .then(leerJson)
-        .then((d) => d.carta && setDetalle(d.carta))
-        .catch(() => {});
+    if (nuevo) traerDetalle();
+    alAbrir?.(carta.id, nuevo);
+  }
+
+  /** Si la dirección venía con esta carta, abrirla sola y traerla a la vista.
+   *
+   *  Es lo que hace que compartir el enlace de UNA carta funcione: el que lo
+   *  abre no tiene que buscarla en la lista. */
+  useEffect(() => {
+    if (!abrirSola) return;
+    setAbierta(true);
+    traerDetalle();
+    // Un momento de espera para que la carta ya esté dibujada cuando la
+    // traemos a la vista; si no, `scrollIntoView` no encuentra dónde ir.
+    const t = setTimeout(() => {
+      mio.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 180);
+    return () => clearTimeout(t);
+  }, [abrirSola, traerDetalle]);
+
+  /** Copia la cita y el enlace directo a esta carta.
+   *
+   *  La cita necesita datos que sólo trae `/api/carta` —la fecha hebrea tal
+   *  como está impresa, la página final—, así que si todavía no están se los
+   *  espera antes de copiar. Copiar una cita a medias sería peor que tardar
+   *  medio segundo.
+   */
+  async function alCopiar() {
+    const completo = detalle || (await traerDetalle());
+    const cita = citaDeLaCarta({ ...carta, ...completo }, libro);
+    const enlace = `${window.location.origin}${window.location.pathname}?carta=${encodeURIComponent(
+      carta.id
+    )}`;
+    const texto = `${cita}\n${enlace}`;
+    try {
+      await navigator.clipboard.writeText(texto);
+      setCopiado(true);
+      setTimeout(() => setCopiado(false), 2200);
+    } catch {
+      // Sin permiso para el portapapeles (pasa en http:// y en algunos
+      // navegadores): se muestra la cita para copiarla a mano, en vez de no
+      // hacer nada y parecer roto.
+      setFallo({
+        texto: "No pude copiar sola la cita. Está acá para copiarla a mano:",
+        detalle: texto,
+      });
     }
   }
+
+  const fecha = fechaLegible(carta.fecha_gregoriana);
+  const hebrea = detalle?.fecha_hebrea_texto;
+  const traduccion = traducciones[idioma];
 
   async function traducir() {
     if (completas[idioma]) return;
@@ -641,11 +1115,16 @@ function Resultado({ carta, libros, alTocarTema }) {
         // se reintenta, en vez de dejar media traducción haciéndose pasar por
         // entera. Es lo que pasaba antes con las cartas largas.
         let pendientes = [tramos[i]];
-        let entero = true;          // ¿sigue siendo el tramo original?
+        let entero = true; // ¿sigue siendo el tramo original?
         while (pendientes.length) {
           const tramo = pendientes.shift();
           const datos = await pedirTraduccion(
-            tramo, idioma, i + 1, tramos.length, carta.id, entero
+            tramo,
+            idioma,
+            i + 1,
+            tramos.length,
+            carta.id,
+            entero
           );
           if (datos.truncada && tramo.length > 800) {
             const mitad = Math.floor(tramo.length / 2);
@@ -669,31 +1148,52 @@ function Resultado({ carta, libros, alTocarTema }) {
     }
   }
 
-  const fecha = fechaLegible(carta.fecha_gregoriana);
-  const hebrea = detalle?.fecha_hebrea_texto;
-  const traduccion = traducciones[idioma];
-
   return (
-    <article className="carta">
+    <article className="carta" ref={mio} id={`c-${carta.id}`}>
       <h2>
-        Carta{carta.numero_carta ? <> <bdi>{carta.numero_carta}</bdi></> : null}
-        {carta.destinatario ? <> — <bdi>{carta.destinatario}</bdi></> : null}
+        Carta
+        {carta.numero_carta ? (
+          <>
+            {" "}
+            <bdi>{carta.numero_carta}</bdi>
+          </>
+        ) : null}
+        {carta.destinatario ? (
+          <>
+            {" — "}
+            <bdi>{carta.destinatario}</bdi>
+          </>
+        ) : null}
       </h2>
 
       <div className="meta">
         {libro && <span>{nombreDeTomo(libro)}</span>}
         {libro?.anios_hebreos && (
-          <span><bdi dir="rtl">{libro.anios_hebreos}</bdi></span>
+          <span>
+            <bdi dir="rtl">{libro.anios_hebreos}</bdi>
+          </span>
         )}
         {carta.pagina_inicio != null && <span>pág. {carta.pagina_inicio}</span>}
         {fecha && <span>{fecha}</span>}
         {!fecha && carta.anio_gregoriano && <span>{carta.anio_gregoriano}</span>}
-        {hebrea && <span><bdi dir="rtl">{hebrea}</bdi></span>}
-        {detalle?.lugar && <span><bdi dir="rtl">{detalle.lugar}</bdi></span>}
+        {hebrea && (
+          <span>
+            <bdi dir="rtl">{hebrea}</bdi>
+          </span>
+        )}
+        {detalle?.lugar && (
+          <span>
+            <bdi dir="rtl">{detalle.lugar}</bdi>
+          </span>
+        )}
       </div>
 
       <p className={carta.resumen_es ? "resumen" : "resumen vacio"}>
-        {carta.resumen_es || "Sin resumen: mirá el texto original."}
+        {carta.resumen_es ? (
+          <Resaltado texto={carta.resumen_es} palabras={palabras} />
+        ) : (
+          "Sin resumen: mirá el texto original."
+        )}
       </p>
 
       {!!carta.temas?.length && (
@@ -740,7 +1240,36 @@ function Resultado({ carta, libros, alTocarTema }) {
             ? "Seguir traduciendo"
             : "Traducir entera"}
         </button>
+
+        {/* COPIAR LA CITA.
+            Lo que un investigador necesita cuando encuentra una carta: de
+            dónde salió, con el tomo, la página, el número y la fecha hebrea,
+            más el enlace directo a esta carta. Antes había que armarlo a mano
+            mirando la pantalla. */}
+        <button
+          type="button"
+          className={copiado ? "copiar copiado" : "copiar"}
+          onClick={alCopiar}
+          title="Copiar la cita y el enlace a esta carta"
+        >
+          {copiado ? "Copiada ✓" : "Copiar cita"}
+        </button>
       </div>
+
+      {/* LA BARRA DE AVANCE DE LA TRADUCCIÓN.
+          Un contador de texto («Traduciendo 3 de 7…») dice el número pero no
+          se ve de reojo. Una carta larga puede tardar un minuto. */}
+      {traduciendo && avance && avance.total > 1 && (
+        <div
+          className="avance"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={avance.total}
+          aria-valuenow={avance.hecho}
+        >
+          <div className="avance-barra" style={{ width: `${(avance.hecho / avance.total) * 100}%` }} />
+        </div>
+      )}
 
       {fallo && <Problema {...fallo} />}
 
@@ -751,7 +1280,37 @@ function Resultado({ carta, libros, alTocarTema }) {
         </div>
       )}
 
-      {abierta && <div className="hebreo" dir="rtl">{carta.texto}</div>}
+      {abierta && (
+        <>
+          {/* EL TAMAÑO DE LA LETRA HEBREA.
+              El hebreo del corpus sale de un OCR y viene lleno de
+              abreviaturas con comillas: a tamaño chico, `אי"א` y `איי א` se
+              parecen demasiado. El zoom del navegador no sirve porque agranda
+              todo y descoloca la página. */}
+          <div className="mandos-hebreo">
+            <span className="nota-chica">Tamaño de la letra hebrea</span>
+            <button
+              type="button"
+              onClick={() => cambiarTamañoHebreo(-1)}
+              disabled={pasoHebreo === 0}
+              aria-label="Letra más chica"
+            >
+              A−
+            </button>
+            <button
+              type="button"
+              onClick={() => cambiarTamañoHebreo(+1)}
+              disabled={pasoHebreo === TAMAÑOS_HEBREOS.length - 1}
+              aria-label="Letra más grande"
+            >
+              A+
+            </button>
+          </div>
+          <div className="hebreo" dir="rtl" style={{ "--escala-hebrea": tamañoHebreo }}>
+            {carta.texto}
+          </div>
+        </>
+      )}
     </article>
   );
 }

@@ -1,5 +1,21 @@
 // Todo lo que habla con servicios externos vive acá, y sólo se ejecuta en el
 // servidor. Es a propósito: las claves nunca llegan al navegador.
+//
+// Lo que revisa que algo venga bien está en `guardias.js`, que no toca la red
+// y por eso se puede probar función por función.
+
+import {
+  TIEMPO_SUPABASE_MS,
+  TIEMPO_MODELOS_MS,
+  esUnTramoDeLaCarta,
+  limpiarMensaje,
+  primeraFila,
+  señalConTiempo,
+  esPorTiempo,
+} from "./guardias.js";
+
+// Se reexportan para que las rutas sigan importando de un solo lado.
+export { esUnTramoDeLaCarta, primeraFila };
 
 // La dirección real de Gemini. La variable existe para poder apuntar a un
 // servidor de prueba al probar la aplicación; en Vercel no se define.
@@ -7,6 +23,23 @@ const GEMINI =
   process.env.GEMINI_BASE || "https://generativelanguage.googleapis.com/v1beta";
 
 const NO_SIRVEN = ["vision", "tts", "image", "audio", "live", "veo", "aqa"];
+
+/** La clave de Gemini va en una CABECERA, no en la dirección.
+ *
+ *  ANTES IBA EN LA DIRECCIÓN: `?key=AIza...`. Funciona, Google lo acepta, y
+ *  es un problema igual. Una dirección aparece en el texto de los errores de
+ *  red, en los registros de cualquier intermediario y en los mensajes que
+ *  esta aplicación le muestra al visitante (el "diario" de intentos de
+ *  `traducir` termina en pantalla). O sea que había un camino real por el que
+ *  la clave podía quedar publicada.
+ *
+ *  En una cabecera no puede pasar: las cabeceras no viajan en la URL, no
+ *  salen en el mensaje de un error de red y no se registran.
+ */
+const cabeceraDeGemini = (apiKey) => ({
+  "Content-Type": "application/json",
+  "x-goog-api-key": apiKey,
+});
 
 /** Un fallo de Supabase, con el cuerpo crudo GUARDADO APARTE.
  *
@@ -25,12 +58,54 @@ const NO_SIRVEN = ["vision", "tts", "image", "audio", "live", "veo", "aqa"];
  *  qué revisar. El cuerpo crudo va en `.detalle`, que las rutas mandan a
  *  `console.error` y queda en los registros de Vercel: ahí lo necesitás vos, no
  *  el visitante.
+ *
+ *  Y el detalle pasa por `limpiarMensaje` antes de guardarse, porque va a los
+ *  registros: si PostgREST alguna vez devolviera algo con forma de clave
+ *  adentro, tampoco quiero eso escrito en Vercel.
  */
 function falloDeSupabase(estado, cuerpo) {
   const e = new Error(`Supabase ${estado}`);
-  e.detalle = String(cuerpo).slice(0, 500);
+  e.detalle = limpiarMensaje(cuerpo, process.env.SUPABASE_KEY).slice(0, 500);
   e.estado = estado;
   return e;
+}
+
+/** Dónde está Supabase y con qué clave, revisado una sola vez. */
+function dondeEstaLaBase() {
+  const url = process.env.SUPABASE_URL;
+  const clave = process.env.SUPABASE_KEY;
+  if (!url || !clave) throw new Error("faltan SUPABASE_URL o SUPABASE_KEY");
+  return { base: url.replace(/\/$/, ""), clave };
+}
+
+/** `fetch` con tiempo máximo y con el error ya traducido.
+ *
+ *  NINGUNA de las cuatro llamadas a Supabase tenía tope de tiempo. Si
+ *  Supabase se colgaba, la función se quedaba esperando hasta que Vercel la
+ *  mataba a los 60 segundos y devolvía una página de error en HTML; la página
+ *  hacía `res.json()` sobre eso y reventaba con "Unexpected token 'A'". Es
+ *  exactamente el error que ya estaba arreglado para Gemini, pero por el otro
+ *  lado.
+ */
+async function pedirConTiempo(url, opciones, ms, queEra) {
+  try {
+    return await fetch(url, { ...opciones, signal: señalConTiempo(ms) });
+  } catch (e) {
+    if (esPorTiempo(e)) {
+      const t = new Error(`${queEra} no contestó en ${Math.round(ms / 1000)} segundos`);
+      t.porTiempo = true;
+      throw t;
+    }
+    // Un error de red puede traer la dirección adentro. Se limpia igual,
+    // aunque la clave ya no viaje en la dirección.
+    throw new Error(
+      limpiarMensaje(
+        `${queEra}: ${e?.message || e}`,
+        process.env.SUPABASE_KEY,
+        process.env.GEMINI_API_KEY
+      )
+    );
+  }
 }
 
 // El nombre del modelo no está escrito a mano en ningún lado: cambian cada
@@ -38,11 +113,22 @@ function falloDeSupabase(estado, cuerpo) {
 // API y se guarda en memoria mientras el servidor esté vivo.
 let cacheDeModelos = null;
 
+/** Se exporta sólo para los tests, que necesitan arrancar sin memoria previa. */
+export function olvidarModelos() {
+  cacheDeModelos = null;
+}
+
 async function modelos(apiKey) {
   if (cacheDeModelos) return cacheDeModelos;
+  if (!apiKey) throw new Error("falta GEMINI_API_KEY");
 
-  const r = await fetch(`${GEMINI}/models?key=${apiKey}`);
-  if (!r.ok) throw new Error(`no pude listar modelos: ${r.status}`);
+  const r = await pedirConTiempo(
+    `${GEMINI}/models`,
+    { headers: cabeceraDeGemini(apiKey) },
+    TIEMPO_MODELOS_MS,
+    "la lista de modelos de Gemini"
+  );
+  if (!r.ok) throw new Error(`no pude listar modelos: HTTP ${r.status}`);
   const datos = await r.json();
 
   const porGeneracion = (a, b) => {
@@ -54,7 +140,7 @@ async function modelos(apiKey) {
   };
 
   const nombres = (datos.models || []).map((m) => ({
-    nombre: m.name.replace("models/", ""),
+    nombre: String(m.name || "").replace("models/", ""),
     metodos: m.supportedGenerationMethods || [],
   }));
 
@@ -62,7 +148,7 @@ async function modelos(apiKey) {
     nombres
       .filter((m) => m.metodos.includes(metodo))
       .map((m) => m.nombre)
-      .filter((n) => !NO_SIRVEN.some((x) => n.includes(x)))
+      .filter((n) => n && !NO_SIRVEN.some((x) => n.includes(x)))
       .filter(extra)
       .sort(porGeneracion);
 
@@ -77,7 +163,7 @@ async function modelos(apiKey) {
   // conteste. Así que primero los `lite`, después el resto de los flash, y al
   // final los grandes.
   const generaContenido = (extra) => utiles("generateContent", extra);
-  cacheDeModelos = {
+  const encontrados = {
     embeddings: utiles("embedContent"),
     texto: [
       ...generaContenido((n) => n.includes("lite")),
@@ -85,15 +171,32 @@ async function modelos(apiKey) {
       ...generaContenido((n) => !n.includes("flash") && !n.includes("lite")),
     ],
   };
-  return cacheDeModelos;
+
+  // No guardar una lista vacía: si la respuesta vino rara, que el próximo
+  // pedido vuelva a preguntar en vez de quedar sin modelos para siempre
+  // mientras el servidor esté vivo.
+  if (encontrados.embeddings.length || encontrados.texto.length) {
+    cacheDeModelos = encontrados;
+  }
+  return encontrados;
 }
 
 /** Convierte la consulta del usuario en un vector de la misma forma que los
  *  que están guardados en la base. */
-export async function vectorDeConsulta(texto, apiKey, dimension = 1536) {
+export async function vectorDeConsulta(texto, apiKey, dimension = 1536, visitante = null) {
   // El techo va ANTES de tocar Gemini. Si se pasó, se lanza un error: la ruta
   // de búsqueda ya sabe seguir sin la parte semántica y avisarle al visitante,
   // que es exactamente lo que corresponde acá.
+  //
+  // Son DOS techos y miden cosas distintas: el de la casa cuida la cuenta de
+  // Gemini, y el del visitante impide que una sola persona se gaste el día de
+  // todos los demás. Ver `consumirCuota`.
+  if (!(await consumirCuotaDelVisitante("buscar", visitante))) {
+    throw new Error(
+      "hiciste muchas búsquedas por significado en poco tiempo. " +
+        "Esperá un momento: la búsqueda por palabras exactas sigue andando."
+    );
+  }
   if (!(await consumirCuota("buscar"))) {
     throw new Error("se alcanzó el límite diario de búsquedas por significado");
   }
@@ -101,19 +204,29 @@ export async function vectorDeConsulta(texto, apiKey, dimension = 1536) {
   let ultimoError = "sin modelos de embeddings";
 
   for (const modelo of embeddings.slice(0, 4)) {
-    const r = await fetch(`${GEMINI}/models/${modelo}:embedContent?key=${apiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: `models/${modelo}`,
-        content: { parts: [{ text: texto }] },
-        outputDimensionality: dimension,
-      }),
-    });
+    const r = await pedirConTiempo(
+      `${GEMINI}/models/${modelo}:embedContent`,
+      {
+        method: "POST",
+        headers: cabeceraDeGemini(apiKey),
+        body: JSON.stringify({
+          model: `models/${modelo}`,
+          content: { parts: [{ text: texto }] },
+          outputDimensionality: dimension,
+        }),
+      },
+      TIEMPO_MODELOS_MS,
+      `el modelo ${modelo}`
+    );
     if (r.ok) {
       const datos = await r.json();
       const valores = datos?.embedding?.values;
-      if (valores?.length) return valores;
+      // Que sea una lista de números de la dimensión correcta, no "algo con
+      // largo". Un vector de otra dimensión hace fallar la consulta en
+      // Postgres con un error que no se entiende desde acá.
+      if (Array.isArray(valores) && valores.length === dimension) return valores;
+      ultimoError = `${modelo}: devolvió un vector raro`;
+      continue;
     }
     ultimoError = `${modelo}: HTTP ${r.status}`;
   }
@@ -122,19 +235,22 @@ export async function vectorDeConsulta(texto, apiKey, dimension = 1536) {
 
 /** Llama a una función de Postgres a través de la API de Supabase. */
 export async function rpc(nombre, argumentos) {
-  const url = process.env.SUPABASE_URL;
-  const clave = process.env.SUPABASE_KEY;
-  if (!url || !clave) throw new Error("faltan SUPABASE_URL o SUPABASE_KEY");
+  const { base, clave } = dondeEstaLaBase();
 
-  const r = await fetch(`${url.replace(/\/$/, "")}/rest/v1/rpc/${nombre}`, {
-    method: "POST",
-    headers: {
-      apikey: clave,
-      Authorization: `Bearer ${clave}`,
-      "Content-Type": "application/json",
+  const r = await pedirConTiempo(
+    `${base}/rest/v1/rpc/${encodeURIComponent(nombre)}`,
+    {
+      method: "POST",
+      headers: {
+        apikey: clave,
+        Authorization: `Bearer ${clave}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(argumentos),
     },
-    body: JSON.stringify(argumentos),
-  });
+    TIEMPO_SUPABASE_MS,
+    "la base"
+  );
   if (!r.ok) throw falloDeSupabase(r.status, await r.text());
   return r.json();
 }
@@ -157,11 +273,43 @@ export async function rpc(nombre, argumentos) {
 export async function consumirCuota(servicio) {
   try {
     const r = await rpc("consumir_cuota", { p_servicio: servicio });
-    // PostgREST devuelve el booleano pelado o envuelto en un arreglo
-    const valor = Array.isArray(r) ? r[0] : r;
-    return valor !== false;
+    return primeraFila(r) !== false;
   } catch (e) {
     console.warn("no pude consultar la cuota:", e?.message, e?.detalle || "");
+    return true;
+  }
+}
+
+/** ¿Y le queda cuota a ESTE visitante?
+ *
+ *  POR QUÉ HACÍA FALTA OTRO TECHO. El de arriba es uno solo para todo el
+ *  mundo y por día. Te protege la cuenta de Gemini, y eso está bien. Pero
+ *  tiene un costado que no se ve: **una sola persona puede gastarle el día a
+ *  todos los demás**. Trescientas búsquedas en un minuto desde una sola
+ *  computadora y el resto de las visitas se queda sin búsqueda por
+ *  significado hasta mañana, sin que nada esté roto.
+ *
+ *  Este techo es por visitante y por ventana corta, y vive en la base por la
+ *  misma razón que el otro: Vercel levanta varias copias y un contador en
+ *  memoria no sirve de nada.
+ *
+ *  Si la función todavía no está creada en la base, se deja pasar: el sitio
+ *  tiene que seguir andando mientras el SQL no se haya corrido.
+ */
+export async function consumirCuotaDelVisitante(servicio, visitante) {
+  if (!visitante) return true; // sin manera de identificarlo, no se frena
+  try {
+    const r = await rpc("consumir_cuota_por_visitante", {
+      p_servicio: servicio,
+      p_visitante: visitante,
+    });
+    return primeraFila(r) !== false;
+  } catch (e) {
+    // Un 404 es "la función no existe todavía": no es un fallo, es que falta
+    // correr el SQL. Cualquier otra cosa sí conviene verla en los registros.
+    if (e?.estado !== 404) {
+      console.warn("no pude consultar la cuota del visitante:", e?.message, e?.detalle || "");
+    }
     return true;
   }
 }
@@ -177,9 +325,15 @@ export async function consumirCuota(servicio) {
  *  Devuelve `true` si guardó. Un `false` quiere decir que la base rechazó el
  *  texto, y eso conviene que quede en los registros.
  */
-export async function guardarTraduccion(
-  { cartaId, idioma, parte, total, texto, modelo, original }
-) {
+export async function guardarTraduccion({
+  cartaId,
+  idioma,
+  parte,
+  total,
+  texto,
+  modelo,
+  original,
+}) {
   const r = await rpc("guardar_traduccion", {
     p_carta_id: cartaId,
     p_idioma: idioma,
@@ -189,8 +343,7 @@ export async function guardarTraduccion(
     p_modelo: modelo || null,
     p_original: original,
   });
-  const valor = Array.isArray(r) ? r[0] : r;
-  return valor === true;
+  return primeraFila(r) === true;
 }
 
 /** Lee filas de una tabla.
@@ -201,52 +354,48 @@ export async function guardarTraduccion(
  *  sitio terminaba diciendo que había menos cartas de las que hay.
  */
 export async function tabla(nombre, parametros = {}, conTotal = false) {
-  const url = process.env.SUPABASE_URL;
-  const clave = process.env.SUPABASE_KEY;
-  if (!url || !clave) throw new Error("faltan SUPABASE_URL o SUPABASE_KEY");
+  const { base, clave } = dondeEstaLaBase();
 
   const cabeceras = { apikey: clave, Authorization: `Bearer ${clave}` };
   if (conTotal) cabeceras.Prefer = "count=exact";
 
+  // `URLSearchParams` escapa los valores, así que un `&select=*` metido
+  // adentro de un id viaja escapado y PostgREST lo lee como parte del valor,
+  // no como otro parámetro. Igual los ids pasan por `idDeCarta` antes de
+  // llegar acá: dos controles, porque este archivo lo puede llamar código
+  // nuevo que se olvide del otro.
   const query = new URLSearchParams(parametros).toString();
-  const r = await fetch(`${url.replace(/\/$/, "")}/rest/v1/${nombre}?${query}`, {
-    headers: cabeceras,
-  });
+  const r = await pedirConTiempo(
+    `${base}/rest/v1/${nombre}?${query}`,
+    { headers: cabeceras },
+    TIEMPO_SUPABASE_MS,
+    "la base"
+  );
   if (!r.ok) throw falloDeSupabase(r.status, await r.text());
 
   const filas = await r.json();
-  if (!conTotal) return filas;
+  if (!conTotal) return Array.isArray(filas) ? filas : [];
 
   // el total viene en la cabecera, con la forma "0-999/1471"
   const rango = r.headers.get("content-range") || "";
   const despues = rango.split("/")[1];
-  const total = despues && despues !== "*" ? Number(despues) : filas.length;
-  return { filas, total };
+  const lasFilas = Array.isArray(filas) ? filas : [];
+  const total = despues && despues !== "*" ? Number(despues) : lasFilas.length;
+  return { filas: lasFilas, total: Number.isFinite(total) ? total : lasFilas.length };
 }
 
-/** Guarda una fila, y si ya estaba la reemplaza.
- *
- *  `alChocar` son las columnas que forman la clave; PostgREST necesita que se
- *  las nombre para saber qué hacer cuando la fila ya existe.
- */
-export async function guardar(nombre, fila, alChocar = null) {
-  const url = process.env.SUPABASE_URL;
-  const clave = process.env.SUPABASE_KEY;
-  if (!url || !clave) throw new Error("faltan SUPABASE_URL o SUPABASE_KEY");
-
-  const query = alChocar ? `?on_conflict=${alChocar}` : "";
-  const r = await fetch(`${url.replace(/\/$/, "")}/rest/v1/${nombre}${query}`, {
-    method: "POST",
-    headers: {
-      apikey: clave,
-      Authorization: `Bearer ${clave}`,
-      "Content-Type": "application/json",
-      Prefer: alChocar ? "resolution=merge-duplicates" : "return=minimal",
-    },
-    body: JSON.stringify(fila),
-  });
-  if (!r.ok) throw falloDeSupabase(r.status, await r.text());
-}
+// NO HAY UNA FUNCIÓN `guardar()` GENÉRICA, Y ES A PROPÓSITO.
+//
+// Había una: `guardar(nombre, fila, alChocar)`, exportada, que escribía
+// CUALQUIER tabla con CUALQUIER contenido. No la llamaba nadie —lo comprobé
+// buscando en todo el repositorio— porque el guardado de traducciones pasó a
+// hacerse por `guardar_traduccion`. Quedó como una puerta sin llave en una
+// pared que ya nadie usa: el día que alguien la vuelva a llamar «porque está
+// ahí», se saltea los controles que hace la función de la base.
+//
+// Si algún día hay que escribir otra tabla, el camino es el mismo que el de
+// las traducciones: una función en Postgres que revise adentro lo que tiene
+// que revisar, y una llamada a `rpc` desde acá.
 
 /** El texto hebreo de una carta, leído de la base por su id.
  *
@@ -260,42 +409,6 @@ export async function textoDeLaCarta(cartaId) {
     limit: "1",
   });
   return filas?.[0]?.texto ?? null;
-}
-
-/** Sin espacios ni saltos, para comparar dos recortes del mismo texto. */
-const sinEspacios = (t) => String(t ?? "").replace(/\s+/g, "");
-
-/** ¿Este tramo es de verdad un pedazo de esta carta?
- *
- *  ESTE ES EL CONTROL QUE FALTABA, y el agujero que tapa era el peor del
- *  sitio. `/api/traducir` recibía `cartaId` y `texto` del navegador, traducía
- *  el texto y guardaba el resultado en la tabla `traducciones` con esa clave,
- *  sin comprobar en ningún momento que el texto fuera de esa carta. El guardado
- *  es un upsert, así que PISA la fila que hubiera. Y la lectura busca sólo por
- *  (carta_id, idioma, parte, total) y, si encuentra algo, lo devuelve sin
- *  consultar a Gemini.
- *
- *  O sea que un POST anónimo con el id de una carta real y un párrafo
- *  inventado en castellano dejaba ese párrafo guardado como «la traducción» de
- *  esa carta, y a partir de ahí se le servía a todo el que apretara «Traducir
- *  entera». En un sitio que publica cartas del Rebe, eso es ponerle en la boca
- *  palabras que no dijo. Es lo más grave que se puede hacer en un sitio que,
- *  por lo demás, es de sólo lectura.
- *
- *  Ahora el texto a traducir se compara contra el de la base. Se comparan las
- *  dos cadenas SIN ESPACIOS, y no con un `includes` literal, por una razón
- *  concreta: `partirEnTramos` en la página corta por párrafo y después vuelve a
- *  pegar los pedazos chicos con `\n\n`, así que un tramo legítimo puede tener
- *  los saltos de línea distintos del original y un `includes` crudo lo
- *  rechazaría. Ignorando los espacios, un tramo de verdad siempre entra, y
- *  sigue siendo imposible fabricar un texto en castellano que, sin espacios,
- *  aparezca dentro de una carta en hebreo.
- */
-export function esUnTramoDeLaCarta(tramo, textoDeLaBase) {
-  const t = sinEspacios(tramo);
-  const completo = sinEspacios(textoDeLaBase);
-  if (!t || !completo) return false;
-  return completo.includes(t);
 }
 
 /** La traducción de un tramo, si ya la habíamos hecho alguna vez. */
@@ -369,13 +482,6 @@ function armarPrompt(texto, nombreIdioma, parte, total, insistir) {
   );
 }
 
-/** Traduce un tramo del texto hebreo de una carta.
- *
- *  La página parte la carta en tramos y los pide de a uno. Antes se mandaba
- *  la carta entera con un techo de 4000 tokens de salida, y las cartas largas
- *  volvían cortadas a la mitad sin avisar. Ahora cada tramo entra holgado, y
- *  de paso cada pedido termina rápido: Vercel corta a los 60 segundos.
- */
 // Cuánto puede tardar todo el pedido, y cuánto una sola llamada a Gemini.
 //
 // Vercel corta la función a los 60 segundos y devuelve una página de error en
@@ -386,12 +492,28 @@ function armarPrompt(texto, nombreIdioma, parte, total, insistir) {
 // llamada tarda entre 13 y 25 segundos. Ocho llamadas nunca iban a entrar.
 //
 // Ahora se corta sola antes que Vercel, y al cortarse devuelve JSON.
-const PRESUPUESTO_MS = 45000;
-const POR_LLAMADA_MS = 22000;
+//
+// Se pueden bajar con variables de entorno SÓLO para los tests: sin ellas,
+// los valores son los de producción.
+const PRESUPUESTO_MS = Number(process.env.TRADUCIR_PRESUPUESTO_MS) || 45000;
+const POR_LLAMADA_MS = Number(process.env.TRADUCIR_POR_LLAMADA_MS) || 22000;
 
-export async function traducir(texto, idioma, apiKey, parte = 1, total = 1) {
+/** Traduce un tramo del texto hebreo de una carta.
+ *
+ *  La página parte la carta en tramos y los pide de a uno. Antes se mandaba
+ *  la carta entera con un techo de 4000 tokens de salida, y las cartas largas
+ *  volvían cortadas a la mitad sin avisar. Ahora cada tramo entra holgado, y
+ *  de paso cada pedido termina rápido.
+ */
+export async function traducir(texto, idioma, apiKey, parte = 1, total = 1, visitante = null) {
   // Igual que arriba, antes de gastar. Acá el corte sí se le muestra a la
   // persona: no hay manera de traducir «a medias».
+  if (!(await consumirCuotaDelVisitante("traducir", visitante))) {
+    throw new Error(
+      "pediste muchas traducciones en poco tiempo. Esperá un momento y volvé " +
+        "a intentar; las que ya están hechas se siguen mostrando."
+    );
+  }
   if (!(await consumirCuota("traducir"))) {
     throw new Error(
       "se alcanzó el límite diario de traducciones. Las que ya están hechas " +
@@ -411,26 +533,36 @@ export async function traducir(texto, idioma, apiKey, parte = 1, total = 1) {
     const margen = Math.min(POR_LLAMADA_MS, restante());
     if (margen <= 1000) return { error: "sin tiempo" };
     try {
-      const r = await fetch(`${GEMINI}/models/${modelo}:generateContent?key=${apiKey}`, {
+      const r = await fetch(`${GEMINI}/models/${modelo}:generateContent`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: cabeceraDeGemini(apiKey),
         body: JSON.stringify({
-          contents: [{ parts: [{ text: armarPrompt(texto, nombreIdioma, parte, total, insistir) }] }],
+          contents: [
+            { parts: [{ text: armarPrompt(texto, nombreIdioma, parte, total, insistir) }] },
+          ],
           generationConfig: { temperature: 0.3, maxOutputTokens: 8192 },
         }),
-        signal: AbortSignal.timeout(margen),
+        signal: señalConTiempo(margen),
       });
       if (!r.ok) return { error: `HTTP ${r.status}`, estado: r.status };
       const datos = await r.json();
       const candidato = datos?.candidates?.[0];
       const salida = (candidato?.content?.parts || [])
-        .map((p) => p.text || "").join("").trim();
+        .map((p) => p.text || "")
+        .join("")
+        .trim();
       if (!salida) return { error: "respuesta vacía" };
       return { salida, truncada: candidato?.finishReason === "MAX_TOKENS" };
     } catch (e) {
-      // AbortSignal.timeout lanza TimeoutError; cualquier otra cosa es de red
-      const porTiempo = e?.name === "TimeoutError" || e?.name === "AbortError";
-      return { error: porTiempo ? "tardó demasiado" : String(e?.message || e) };
+      // El mensaje de este error TERMINA EN PANTALLA, metido en el diario de
+      // intentos. Por eso pasa por `limpiarMensaje`: es el último lugar por
+      // donde una clave podría salir publicada.
+      const porTiempo = esPorTiempo(e);
+      return {
+        error: porTiempo
+          ? "tardó demasiado"
+          : limpiarMensaje(String(e?.message || e), apiKey).slice(0, 120),
+      };
     }
   }
 
@@ -460,15 +592,15 @@ export async function traducir(texto, idioma, apiKey, parte = 1, total = 1) {
     // cuentan aparte. Si comparten contador, un reintento por sobrecarga
     // termina mandando el prompt de "insistí, me devolviste el hebreo", que
     // no tiene nada que ver.
-    let reintentos = 0;                  // por sobrecarga
-    let ecos = 0;                        // por devolver el hebreo
+    let reintentos = 0; // por sobrecarga
+    let ecos = 0; // por devolver el hebreo
     let insistir = false;
 
     while (true) {
       if (restante() <= 1000) {
         throw new Error(
           `no llegué a traducir a tiempo (${diario.join(" · ") || "sin intentos"}). ` +
-          `Probá de nuevo: los modelos gratuitos de Gemini a veces tardan mucho.`
+            `Probá de nuevo: los modelos gratuitos de Gemini a veces tardan mucho.`
         );
       }
 
@@ -477,8 +609,9 @@ export async function traducir(texto, idioma, apiKey, parte = 1, total = 1) {
       if (error) {
         anotar(`${modelo}: ${error}`);
         if (SIN_REMEDIO.has(estado)) {
-          throw new Error(`no pude traducir (${modelo}: HTTP ${estado}). ` +
-                          `Revisá la clave de Gemini.`);
+          throw new Error(
+            `no pude traducir (${modelo}: HTTP ${estado}). Revisá la clave de Gemini.`
+          );
         }
         // Sobrecarga: se espera un momento y se reintenta el mismo modelo,
         // mientras quede presupuesto y no se haya intentado ya dos veces.
@@ -487,7 +620,7 @@ export async function traducir(texto, idioma, apiKey, parte = 1, total = 1) {
           await new Promise((listo) => setTimeout(listo, ESPERA_MS * reintentos));
           continue;
         }
-        break;                            // al modelo siguiente
+        break; // al modelo siguiente
       }
 
       // Si volvió en hebreo, el modelo copió en vez de traducir. Se insiste
@@ -495,7 +628,11 @@ export async function traducir(texto, idioma, apiKey, parte = 1, total = 1) {
       // sería peor que fallar: parece una traducción y no lo es.
       if (!esperaHebreo && proporcionHebrea(salida) > 0.5) {
         anotar(`${modelo}: devolvió el hebreo sin traducir`);
-        if (ecos === 0) { ecos++; insistir = true; continue; }
+        if (ecos === 0) {
+          ecos++;
+          insistir = true;
+          continue;
+        }
         break;
       }
       return { traduccion: salida, truncada, modelo };
