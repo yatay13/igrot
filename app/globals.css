@@ -1577,6 +1577,57 @@ kbd {
   margin: 0 1px;
 }
 
+/* =========================================================================
+   LA PÁGINA DE TAREAS
+   Es de uso interno y la ve una sola persona, así que reaprovecha casi todo
+   lo del sitio. Esto es lo poco que le falta.
+   ========================================================================= */
+.tareas {
+  max-width: 760px;
+  margin: 0 auto;
+}
+.tareas .carta {
+  padding: 24px 26px;
+}
+.tareas .carta h2 {
+  font-size: 1.1rem;
+  color: var(--texto);
+}
+.tareas .campo {
+  margin: 18px 0;
+}
+.tareas .campo input {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.cuentas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 22px;
+  margin: 18px 0 6px;
+  font-size: 0.88rem;
+  color: var(--suave);
+}
+.cuentas b {
+  color: var(--tinta);
+  font-variant-numeric: tabular-nums;
+}
+.diario {
+  margin: 12px 0 0;
+  padding-inline-start: 0;
+  list-style: none;
+  max-height: 340px;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.76rem;
+  line-height: 1.8;
+  color: var(--suave);
+}
+.diario li {
+  border-bottom: 1px solid var(--borde);
+  padding: 2px 0;
+}
+
 @media print {
   :root {
     --fondo: #ffffff;

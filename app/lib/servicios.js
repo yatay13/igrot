@@ -181,25 +181,23 @@ async function modelos(apiKey) {
   return encontrados;
 }
 
-/** Convierte la consulta del usuario en un vector de la misma forma que los
- *  que están guardados en la base. */
-export async function vectorDeConsulta(texto, apiKey, dimension = 1536, visitante = null) {
-  // El techo va ANTES de tocar Gemini. Si se pasó, se lanza un error: la ruta
-  // de búsqueda ya sabe seguir sin la parte semántica y avisarle al visitante,
-  // que es exactamente lo que corresponde acá.
-  //
-  // Son DOS techos y miden cosas distintas: el de la casa cuida la cuenta de
-  // Gemini, y el del visitante impide que una sola persona se gaste el día de
-  // todos los demás. Ver `consumirCuota`.
-  if (!(await consumirCuotaDelVisitante("buscar", visitante))) {
-    throw new Error(
-      "hiciste muchas búsquedas por significado en poco tiempo. " +
-        "Esperá un momento: la búsqueda por palabras exactas sigue andando."
-    );
-  }
-  if (!(await consumirCuota("buscar"))) {
-    throw new Error("se alcanzó el límite diario de búsquedas por significado");
-  }
+/** El vector de un texto. Pelado: sin techos, sin cuotas, sin avisos.
+ *
+ *  POR QUÉ ESTÁ SEPARADO DE `vectorDeConsulta`. Los dos piden lo mismo a
+ *  Gemini, pero se usan para cosas muy distintas:
+ *
+ *    · `vectorDeConsulta` es lo que pasa cuando un visitante escribe algo. Ahí
+ *      los techos son imprescindibles: miden gasto que provoca un desconocido.
+ *    · `vectorDeTexto` es lo que usa la vectorización del corpus, que la
+ *      disparás vos a propósito desde una ruta con clave. Si pasara por el
+ *      techo diario de búsquedas, vectorizar seis mil cartas dejaría al sitio
+ *      sin búsqueda por significado para todo el mundo durante días. El
+ *      trabajo de fondo no tiene por qué comerse la cuota de las visitas.
+ *
+ *  Era un error fácil de cometer y caro de descubrir: habría aparecido recién
+ *  a mitad de la primera corrida, con el sitio ya degradado.
+ */
+export async function vectorDeTexto(texto, apiKey, dimension = 1536) {
   const { embeddings } = await modelos(apiKey);
   let ultimoError = "sin modelos de embeddings";
 
@@ -230,7 +228,33 @@ export async function vectorDeConsulta(texto, apiKey, dimension = 1536, visitant
     }
     ultimoError = `${modelo}: HTTP ${r.status}`;
   }
-  throw new Error(`no pude vectorizar la consulta (${ultimoError})`);
+  throw new Error(`no pude vectorizar (${ultimoError})`);
+}
+
+/** Convierte la consulta del usuario en un vector de la misma forma que los
+ *  que están guardados en la base. */
+export async function vectorDeConsulta(texto, apiKey, dimension = 1536, visitante = null) {
+  // El techo va ANTES de tocar Gemini. Si se pasó, se lanza un error: la ruta
+  // de búsqueda ya sabe seguir sin la parte semántica y avisarle al visitante,
+  // que es exactamente lo que corresponde acá.
+  //
+  // Son DOS techos y miden cosas distintas: el de la casa cuida la cuenta de
+  // Gemini, y el del visitante impide que una sola persona se gaste el día de
+  // todos los demás. Ver `consumirCuota`.
+  if (!(await consumirCuotaDelVisitante("buscar", visitante))) {
+    throw new Error(
+      "hiciste muchas búsquedas por significado en poco tiempo. " +
+        "Esperá un momento: la búsqueda por palabras exactas sigue andando."
+    );
+  }
+  if (!(await consumirCuota("buscar"))) {
+    throw new Error("se alcanzó el límite diario de búsquedas por significado");
+  }
+  try {
+    return await vectorDeTexto(texto, apiKey, dimension);
+  } catch (e) {
+    throw new Error(String(e?.message || e).replace("no pude vectorizar", "no pude vectorizar la consulta"));
+  }
 }
 
 /** Llama a una función de Postgres a través de la API de Supabase. */

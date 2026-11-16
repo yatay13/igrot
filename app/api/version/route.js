@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 // Tres veces seguidas estuvimos discutiendo si un arreglo estaba en Vercel o
 // no, mirando de refilón otras respuestas. Con esto se abre la dirección y se
 // lee la fecha: si es vieja, el despliegue no pasó, y no hay más que hablar.
-const PUBLICADO = "2026-11-13b · fondo visible, teclado, original como página";
+const PUBLICADO = "2026-11-16 · vectorización desde el sitio, sin Colab";
 
 export async function GET() {
   return Response.json(
@@ -28,6 +28,7 @@ export async function GET() {
         fondo_del_sitio: true,
         navegacion_con_teclado: true,
         barra_de_lectura: true,
+        vectorizacion_sin_colab: true,
       },
     },
     { headers: { "Cache-Control": "no-store" } }
