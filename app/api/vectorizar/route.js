@@ -187,6 +187,7 @@ export async function POST(pedido) {
     let hechas = 0;
     let tramosGuardados = 0;
     let esperarMs = 0;
+    let cuotaDelDia = false;
     const problemas = [];
     const esperarMiTurno = hacerElFreno(ENTRE_LLAMADAS_MS);
 
@@ -210,7 +211,7 @@ export async function POST(pedido) {
       // golpeando a Gemini después del primer rechazo y llenaría el registro
       // de errores idénticos. Así el daño queda en las pocas que ya estaban
       // en el aire.
-      if (esperarMs > 0) return;
+      if (esperarMs > 0 || cuotaDelDia) return;
 
       const tramos = tramosConIndice(carta.texto);
       if (!tramos.length) {
@@ -257,7 +258,19 @@ export async function POST(pedido) {
         // SI GEMINI DICE «PARÁ», SE PIDE UNA PAUSA Y SE SIGUE DESPUÉS. No se
         // abandona: en una tarea de once mil tramos un 429 es casi seguro, y
         // abandonar significaría volver a la computadora a reiniciarla.
-        if (esDemasiadoRapido(e)) esperarMs = 60000;
+        // Dos cosas muy distintas, aunque las dos lleguen como 429:
+        //
+        //   · «fuiste muy rápido» → se espera un minuto y se sigue.
+        //   · «se acabó la cuota del día» → esperar NO sirve. La cuota vuelve
+        //     recién cuando Google la renueva. Hay que parar y avisar, no
+        //     dejar a alguien mirando una pausa de sesenta segundos que se
+        //     repite contra las mismas cartas sin avanzar ninguna.
+        if (e?.cuota === "dia") {
+          cuotaDelDia = true;
+          esperarMs = 0;
+        } else if (esDemasiadoRapido(e)) {
+          esperarMs = 60000;
+        }
       }
     }
 
@@ -272,6 +285,7 @@ export async function POST(pedido) {
       tramos: tramosGuardados,
       problemas,
       esperarMs,
+      cuotaDelDia,
       avance: primeraFila(await rpc("avance_de_vectores", {})),
     });
   } catch (e) {

@@ -280,6 +280,61 @@ describe("vectorizar de verdad", () => {
     );
   });
 
+  test("distingue «fuiste muy rápido» de «se acabó la cuota del día»", async () => {
+    // LOS DOS LLEGAN COMO 429 Y SON COSAS MUY DISTINTAS.
+    //
+    //   · por minuto → se espera un minuto y el trabajo sigue.
+    //   · por día    → esperar NO sirve. La cuota vuelve cuando Google la
+    //                  renueva, no en sesenta segundos.
+    //
+    // Mi código tiraba el cuerpo del error y se quedaba con «HTTP 429», así
+    // que trataba a las dos igual. En la corrida de verdad, la pausa de un
+    // minuto se repitió contra las mismas tres cartas sin avanzar ninguna.
+    // Estos son los cuerpos que manda Google.
+    const violacion = (quotaId) => ({
+      estado: 429,
+      cuerpo: {
+        error: {
+          code: 429,
+          message: "You exceeded your current quota",
+          details: [
+            {
+              "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+              violations: [
+                {
+                  quotaMetric: "generativelanguage.googleapis.com/embed_content_requests",
+                  quotaId,
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+    guion.embed = violacion("EmbedContentRequestsPerDayPerProjectPerModel-FreeTier");
+    let d = await (await vectorizar(postJson("/api/vectorizar", { lote: 3 }, conClave))).json();
+    assert.equal(d.cuotaDelDia, true, "tendría que reconocer la cuota diaria");
+    assert.equal(d.esperarMs, 0, "y NO pedir una pausa que no va a servir");
+    assert.match(d.problemas.join(" "), /cuota DEL DÍA/);
+
+    servicios.olvidarModelos();
+    guion.embed = violacion("EmbedContentRequestsPerMinutePerProjectPerModel-FreeTier");
+    d = await (await vectorizar(postJson("/api/vectorizar", { lote: 3 }, conClave))).json();
+    assert.ok(!d.cuotaDelDia, "esta no es la diaria");
+    assert.ok(d.esperarMs > 0, "y esta sí merece una pausa");
+  });
+
+  test("un 429 sin motivo reconocible cae del lado seguro: pausa, no abandono", async () => {
+    // Si Google cambia el texto de su respuesta, lo peor que puede pasar es
+    // esperar un minuto de más. Lo contrario —dar por agotado el día cuando
+    // no lo está— cortaría el trabajo por nada.
+    guion.embed = { estado: 429, cuerpo: { error: "algo" } };
+    const d = await (await vectorizar(postJson("/api/vectorizar", { lote: 3 }, conClave))).json();
+    assert.ok(!d.cuotaDelDia);
+    assert.ok(d.esperarMs > 0);
+  });
+
   test("LAS CARTAS SE SUPERPONEN: doce no tardan doce veces lo que una", async () => {
   // ESTE TEST EXISTE POR UN ERROR QUE MIS PROPIOS TESTS NO VIERON.
   //

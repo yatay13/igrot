@@ -181,6 +181,35 @@ async function modelos(apiKey) {
   return encontrados;
 }
 
+/** Qué cuota rechazó el pedido, leída del cuerpo del error de Gemini.
+ *
+ *  POR QUÉ HACE FALTA. Un 429 de Gemini puede ser dos cosas muy distintas:
+ *
+ *    · «fuiste muy rápido» (límite por minuto). Se arregla esperando un
+ *      minuto, y el trabajo sigue.
+ *    · «se te acabó la cuota del día». NO se arregla esperando un minuto.
+ *      Esperar es quedarse mirando una pantalla quieta durante horas.
+ *
+ *  Mi código tiraba el cuerpo del error y se quedaba con «HTTP 429», así que
+ *  las dos se veían igual y el sitio trataba a las dos como la primera.
+ *  Ariel se encontró con la pausa de sesenta segundos repitiéndose contra las
+ *  mismas tres cartas, sin avanzar ni una.
+ *
+ *  Google manda en el cuerpo un `quotaId` que lo dice, con la forma
+ *  `...PerDayPerProjectPerModel-FreeTier` o `...PerMinute...`. Eso es lo que
+ *  se busca acá. Si no viene, se devuelve nulo y quien llama decide; no se
+ *  inventa un diagnóstico.
+ */
+function cuotaQueFallo(cuerpo) {
+  const t = String(cuerpo || "");
+  const id = t.match(/"quotaId"\s*:\s*"([^"]+)"/)?.[1] || "";
+  const metrica = t.match(/"quotaMetric"\s*:\s*"([^"]+)"/)?.[1] || "";
+  const junto = `${id} ${metrica} ${t.slice(0, 400)}`;
+  if (/per\s*day|perday|daily/i.test(junto)) return "dia";
+  if (/per\s*minute|perminute/i.test(junto)) return "minuto";
+  return null;
+}
+
 /** El vector de un texto. Pelado: sin techos, sin cuotas, sin avisos.
  *
  *  POR QUÉ ESTÁ SEPARADO DE `vectorDeConsulta`. Los dos piden lo mismo a
@@ -200,6 +229,7 @@ async function modelos(apiKey) {
 export async function vectorDeTexto(texto, apiKey, dimension = 1536) {
   const { embeddings } = await modelos(apiKey);
   let ultimoError = "sin modelos de embeddings";
+  let cuotaAgotada = null;
 
   for (const modelo of embeddings.slice(0, 4)) {
     const r = await pedirConTiempo(
@@ -226,9 +256,24 @@ export async function vectorDeTexto(texto, apiKey, dimension = 1536) {
       ultimoError = `${modelo}: devolvió un vector raro`;
       continue;
     }
+    // Se lee el cuerpo del error, no sólo el número. Es la única manera de
+    // distinguir «fuiste muy rápido» de «se acabó la cuota del día».
+    let cual = null;
+    if (r.status === 429) {
+      try {
+        cual = cuotaQueFallo(await r.text());
+      } catch {
+        /* sin cuerpo: queda en nulo */
+      }
+    }
     ultimoError = `${modelo}: HTTP ${r.status}`;
+    if (cual === "dia") ultimoError += " · se agotó la cuota DEL DÍA";
+    if (cual === "minuto") ultimoError += " · fue muy rápido (cuota por minuto)";
+    cuotaAgotada = cual || cuotaAgotada;
   }
-  throw new Error(`no pude vectorizar (${ultimoError})`);
+  const e = new Error(`no pude vectorizar (${ultimoError})`);
+  e.cuota = cuotaAgotada;
+  throw e;
 }
 
 /** Convierte la consulta del usuario en un vector de la misma forma que los

@@ -108,6 +108,7 @@ export default function Tareas() {
     let hechas = 0;
     let vaciasSeguidas = 0;
     let fallosSeguidos = 0;
+    let pausasSinAvanzar = 0;
 
     while (!quieroParar.current) {
       try {
@@ -133,10 +134,41 @@ export default function Tareas() {
         hechas += d.hechas || 0;
         setHechasEnEstaVuelta(hechas);
 
+        // SE ACABÓ LA CUOTA DEL DÍA. Esperar no sirve: no vuelve en un
+        // minuto, vuelve cuando Google la renueva. Parar y decirlo es lo
+        // único honesto; la alternativa es dejarte mirando una pausa de
+        // sesenta segundos que se repite contra las mismas cartas.
+        if (d.cuotaDelDia) {
+          setError(
+            "Se agotó la cuota DIARIA de Gemini para embeddings. Esperar no " +
+              "sirve: vuelve cuando Google la renueva (suele ser a medianoche " +
+              "hora del Pacífico, unas 5 de la mañana en Buenos Aires). Todo " +
+              "lo vectorizado está guardado: mañana apretá Empezar y sigue " +
+              "desde acá."
+          );
+          anotar("se agotó la cuota del día · paro");
+          break;
+        }
+
         // Gemini pidió un respiro. No es un error: en un trabajo de once mil
         // tramos es casi inevitable. Se espera lo que pidió y se sigue sola,
         // en vez de hacerte volver a la computadora a reiniciarla.
         if (d.esperarMs > 0) {
+          // Y UN SEGURO, POR SI EL MOTIVO NO VIENE CLARO. Si dos pausas
+          // seguidas no hacen avanzar ni una carta, esperar no está
+          // sirviendo, diga lo que diga el error. Se para igual. Esto es lo
+          // que atrapa el caso aunque Google cambie el texto de su respuesta.
+          pausasSinAvanzar = d.hechas > 0 ? 0 : pausasSinAvanzar + 1;
+          if (pausasSinAvanzar >= 2) {
+            setError(
+              "Dos pausas seguidas sin vectorizar ni una carta. Lo más " +
+                "probable es que se haya agotado la cuota diaria de Gemini, " +
+                "que no vuelve esperando un minuto. Lo hecho está guardado: " +
+                "probá de nuevo más tarde."
+            );
+            anotar("dos pausas sin avanzar · paro");
+            break;
+          }
           const seg = Math.round(d.esperarMs / 1000);
           anotar(`Gemini pidió esperar · pauso ${seg} segundos y sigo`);
           await new Promise((listo) => setTimeout(listo, d.esperarMs));
