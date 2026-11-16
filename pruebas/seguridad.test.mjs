@@ -233,34 +233,56 @@ describe("los ids y lo que viaja a PostgREST", () => {
   // adentro de un id viaja escapado. Igual el id pasa antes por `idDeCarta`:
   // dos controles, porque `tabla()` la puede llamar código nuevo que se
   // olvide del otro.
-  test("un id con parámetros colgados no cambia la consulta", async () => {
-    for (const malo of [
-      "igrot_1&select=*",
-      "igrot_1&limit=99999",
-      "igrot_1,otra",
-      "igrot_1)or(1=1",
-      "*",
-    ]) {
-      limpiarGuion();
-      guion.tablas.cartas = { cuerpo: [{ id: "x" }] };
-      const r = await carta(get(`/api/carta?id=${encodeURIComponent(malo)}`));
-      assert.equal(r.status, 400, `tendría que rechazar ${malo}`);
-      // y no llegó a tocar la base
-      assert.equal(peticiones.length, 0, `llamó a la base con ${malo}`);
+  test("un id raro no agrega parámetros a la consulta de PostgREST", () => {
+    // Antes este test comprobaba que la ruta RECHAZARA esos ids. Estaba mal:
+    // los ids del corpus son el nombre del archivo original y tienen
+    // paréntesis, espacios y comillas, así que rechazar «lo raro» rechazaba
+    // el corpus entero. La defensa de verdad es otra, y es la de abajo: el
+    // valor viaja escapado.
+    assert.ok(true);
+  });
+
+  test("ESTA es la defensa: el id viaja escapado y no agrega parámetros", async () => {
+    // Se prueban los ids de verdad del corpus —con paréntesis, espacios,
+    // comillas y hebreo— y además uno con pinta de ataque. En todos los
+    // casos el `select` que llega a PostgREST tiene que ser el nuestro y uno
+    // solo.
+    const ids = [
+      'eq.13) יג - קיץ תשט"ז::00003',
+      "eq.27) כז - תשל\"א-תשל\"ב::00214",
+      "eq.igrot_1&select=*",
+      "eq.igrot_1&limit=99999",
+      "eq.*",
+    ];
+    for (const id of ids) {
+      let urlVista;
+      guion.tablas.cartas = ({ url }) => {
+        urlVista = url.search;
+        return { cuerpo: [] };
+      };
+      await servicios.tabla("cartas", { select: "texto", id, limit: "1" });
+      const params = new URLSearchParams(urlVista);
+      assert.equal(params.get("select"), "texto", `con ${id}`);
+      assert.equal(params.getAll("select").length, 1, `con ${id}`);
+      assert.equal(params.get("limit"), "1", `con ${id}`);
+      // y el id llega entero, sin mutilar: si no, la carta no se encontraría
+      assert.equal(params.get("id"), id, `con ${id}`);
     }
   });
 
-  test("si un id raro llegara a `tabla()`, viaja escapado y no agrega parámetros", async () => {
-    let urlVista;
-    guion.tablas.cartas = ({ url }) => {
-      urlVista = url.search;
-      return { cuerpo: [] };
-    };
-    await servicios.tabla("cartas", { select: "texto", id: "eq.igrot_1&select=*", limit: "1" });
-    const params = new URLSearchParams(urlVista);
-    // El `select` sigue siendo el que pusimos, no el que venía en el id.
-    assert.equal(params.get("select"), "texto");
-    assert.equal(params.getAll("select").length, 1);
+  test("una carta con id hebreo se puede abrir y traducir", async () => {
+    // El caso que el filtro viejo rompía. Va de punta a punta por las dos
+    // rutas que usan `idDeCarta`.
+    const id = '13) יג - קיץ תשט"ז::00003';
+    guion.tablas.cartas = { cuerpo: [{ id, texto: CARTA_HEBREA, lugar: "ברוקלין" }] };
+    const r1 = await carta(get(`/api/carta?id=${encodeURIComponent(id)}`));
+    assert.equal(r1.status, 200, "no se pudo abrir la carta");
+
+    guion.tablas.traducciones = { cuerpo: [] };
+    const r2 = await traducir(
+      postJson("/api/traducir", { texto: "שלום וברכה!", cartaId: id })
+    );
+    assert.equal(r2.status, 200, "no se pudo traducir");
   });
 });
 

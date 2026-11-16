@@ -155,13 +155,24 @@ describe("filtro()", () => {
 
 // ---------------------------------------------------------------------------
 describe("idDeCarta()", () => {
-  test("acepta los ids que de verdad usa el corpus", () => {
-    for (const bueno of ["igrot_13", "igrot_13::00003", "igrot_1", "a.b-c_d:e"]) {
+  test("ACEPTA los ids que de verdad usa el corpus", () => {
+    // ESTE TEST NACIÓ DE UN ERROR MÍO. La primera versión exigía letras
+    // latinas y números, y los ids del corpus son el nombre del archivo
+    // original: paréntesis, espacios, letras hebreas y comillas. Con aquel
+    // filtro puesto, «Traducir entera» contestaba «falta el id de la carta»
+    // para TODO el corpus. Estos cuatro salieron de la base de verdad.
+    const reales = [
+      '13) יג - קיץ תשט"ז::00003',
+      '27) כז - תשל"א-תשל"ב::00214',
+      '1) א - תרפ"ח-תש"ה::00001',
+      "igrot_13::00003",
+    ];
+    for (const bueno of reales) {
       assert.equal(idDeCarta(bueno), bueno, `tendría que aceptar ${bueno}`);
     }
   });
 
-  test("rechaza lo que no tiene forma de id", () => {
+  test("rechaza lo que no puede ser un id", () => {
     const malos = [
       "",
       "   ",
@@ -171,21 +182,28 @@ describe("idDeCarta()", () => {
       {},
       ["igrot_1"],
       "x".repeat(TOPE_ID + 1),
-      "igrot_1/../otra",           // una barra no aparece en ningún id
-      "igrot_1?select=*",          // el intento de agregar un parámetro
-      "igrot_1&select=*",
-      "igrot_1 or 1=1",            // espacios
-      "igrot_1\nMalo: si",         // un salto de línea
-      "igrot_1%00",
-      "igrot_1'",
+      // Caracteres de control: no están en ningún nombre de archivo y sí
+      // pueden ensuciar un registro o partir una cabecera en dos.
+      "igrot_1\nMalo: si",
+      "igrot_1\u0000",
+      "igrot_1\r\nSet-Cookie: x",
     ];
     for (const malo of malos) {
       assert.equal(idDeCarta(malo), null, `tendría que rechazar ${JSON.stringify(malo)}`);
     }
   });
 
-  test("saca los espacios de los costados antes de revisar", () => {
+  test("saca los espacios de los costados", () => {
     assert.equal(idDeCarta("  igrot_13  "), "igrot_13");
+  });
+
+  test("un id con pinta de inyección se acepta como TEXTO, y eso está bien", () => {
+    // La defensa no es el filtro de letras: es que el valor viaja escapado
+    // por `URLSearchParams`. Un `&select=*` metido adentro de un id se lee
+    // como parte del valor y no agrega ningún parámetro. Hay un test de eso
+    // en `seguridad.test.mjs`. Acá sólo se fija que no se rechace, porque un
+    // id del corpus puede tener casi cualquier signo.
+    assert.equal(idDeCarta("igrot_1&select=*"), "igrot_1&select=*");
   });
 });
 

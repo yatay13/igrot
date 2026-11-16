@@ -254,7 +254,10 @@ describe("vectorizar de verdad", () => {
     assert.match(d.problemas.join(" "), /mala/);
   });
 
-  test("si se agotó la cuota de Gemini, corta en vez de seguir golpeando", async () => {
+  test("si Gemini dice «pará», pide una pausa en vez de abandonar", async () => {
+    // La versión anterior cortaba el trabajo entero ante un 429. En una tarea
+    // de once mil tramos un 429 es casi seguro, así que eso significaba
+    // volver a la computadora a reiniciarla a mano cada tanto.
     guion.rpc.vectores_pendientes = {
       cuerpo: Array.from({ length: 5 }, (_, i) => ({
         carta_id: `c${i}`,
@@ -265,7 +268,52 @@ describe("vectorizar de verdad", () => {
     guion.embed = { estado: 429, cuerpo: { error: "RESOURCE_EXHAUSTED" } };
     const d = await (await vectorizar(postJson("/api/vectorizar", { lote: 5 }, conClave))).json();
     assert.equal(d.hechas, 0);
-    assert.equal(d.problemas.length, 1, "tendría que haber parado en la primera");
+    assert.ok(d.esperarMs > 0, "tendría que pedir una espera");
+    assert.equal(d.problemas.length, 1, "y parar la tanda ahí, sin golpear cuatro veces más");
+  });
+
+  test("una carta larguísima entra igual: es la primera y se lleva todo el presupuesto", async () => {
+    // LA CARTA MÁS LARGA DEL CORPUS TIENE 34.529 CARACTERES: 26 tramos. Con
+    // la regla anterior podía no entrar nunca, porque siempre había otra
+    // adelante comiéndose el tiempo. Y como las pendientes se piden siempre
+    // en el mismo orden, volvía a salir primera en cada tanda: el trabajo
+    // entero se habría trabado ahí sin que nada pareciera roto.
+    let guardado;
+    guion.rpc.vectores_pendientes = {
+      cuerpo: [{ carta_id: "la-larga", texto: "א".repeat(34529), motivo: "falta" }],
+    };
+    guion.rpc.guardar_chunks_de_carta = ({ cuerpo }) => {
+      guardado = cuerpo;
+      return { cuerpo: cuerpo.p_chunks.length };
+    };
+    const d = await (await vectorizar(postJson("/api/vectorizar", { lote: 3 }, conClave))).json();
+    assert.equal(d.hechas, 1, "la carta larga tiene que entrar");
+    // El número lo calcula `cuantosTramos`, que ya tiene su propio test
+    // comprobando que coincide con los tramos que salen de verdad. Escribirlo
+    // a mano acá fue mi primer intento y puse 26: son 27.
+    assert.equal(
+      guardado.p_chunks.length,
+      cuantosTramos("א".repeat(34529)),
+      `salieron ${guardado?.p_chunks?.length} tramos`
+    );
+    for (const c of guardado.p_chunks) assert.equal(c.embedding.length, 1536);
+  });
+
+  test("si una carta no completa todos sus tramos, se informa por nombre", async () => {
+    // Para que una carta que falla siempre se vea en el registro, en vez de
+    // trabar el trabajo en silencio.
+    let n = 0;
+    guion.rpc.vectores_pendientes = {
+      cuerpo: [{ carta_id: "problematica", texto: "א".repeat(6000), motivo: "falta" }],
+    };
+    guion.embed = () => {
+      n++;
+      if (n >= 3) return { estado: 500, cuerpo: { error: "se cayó" } };
+      return { cuerpo: { embedding: { values: vectorFalso() } } };
+    };
+    const d = await (await vectorizar(postJson("/api/vectorizar", { lote: 1 }, conClave))).json();
+    assert.equal(d.hechas, 0);
+    assert.match(d.problemas.join(" "), /problematica/);
   });
 
   test("devuelve el avance para la barra", async () => {

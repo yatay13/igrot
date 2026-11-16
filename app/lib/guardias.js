@@ -90,15 +90,42 @@ export function filtro(v) {
   return t || null;
 }
 
-/** Un id de carta, o null si no sirve. */
+/** Un id de carta, o null si no sirve.
+ *
+ *  ACÁ ME EQUIVOQUÉ FEO, Y VALE DEJARLO ESCRITO.
+ *
+ *  La primera versión exigía que el id fuera sólo letras latinas, números y
+ *  unos pocos signos: `^[A-Za-z0-9_:.-]+$`. Me pareció una defensa barata
+ *  contra alguien que mandara un id raro para colarse en la consulta.
+ *
+ *  Pero los ids del corpus son así:
+ *
+ *      13) יג - קיץ תשט"ז::00003
+ *      27) כז - תשל"א-תשל"ב::00214
+ *
+ *  —el nombre del archivo original, con paréntesis, espacios, letras hebreas
+ *  y comillas—. O sea que ese filtro RECHAZABA las cartas de verdad. Con él
+ *  puesto, «Traducir entera» contestaba «falta el id de la carta» para todo
+ *  el corpus, y `/api/carta` no devolvía la fecha hebrea ni el lugar.
+ *
+ *  El error de fondo no fue el regex: fue inventarme la forma del dato en vez
+ *  de ir a mirarla. Apareció recién cuando una medición de otra cosa mostró
+ *  un id de verdad.
+ *
+ *  Y la defensa que yo creía estar agregando ya estaba, en otro lado: los
+ *  valores viajan a PostgREST por `URLSearchParams`, que los escapa, así que
+ *  un `&select=*` metido adentro de un id va escapado y se lee como parte del
+ *  valor. Hay un test que lo comprueba. Lo que queda acá es lo que de verdad
+ *  no puede aparecer en un id: caracteres de control —saltos de línea,
+ *  nulos— que no están en ningún nombre de archivo y sí pueden ensuciar un
+ *  registro o una cabecera.
+ */
 export function idDeCarta(v) {
   if (typeof v !== "string") return null;
   const t = v.trim();
   if (!t || t.length > TOPE_ID) return null;
-  // Los ids del corpus son `igrot_13::00003` y parecidos: letras, números y
-  // unos pocos signos. Un id con una barra, un signo de pregunta o un salto
-  // de línea no es un id del corpus, es alguien probando qué pasa.
-  if (!/^[A-Za-z0-9_:.\-]+$/.test(t)) return null;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001F\u007F]/.test(t)) return null;
   return t;
 }
 

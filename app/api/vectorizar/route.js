@@ -44,6 +44,38 @@ export const maxDuration = 60;
 // que se alcanzó a hacer.
 const PRESUPUESTO_MS = 45000;
 
+/** Cuántos tramos se le piden a Gemini a la vez.
+ *
+ *  POR QUÉ NO DE A UNO, QUE ERA LO PRIMERO QUE ESCRIBÍ. La medición dio el
+ *  tamaño real del trabajo: 5.896 cartas sin vector más 2.053 con vectores
+ *  viejos, que son unos once mil tramos. De a uno, con lo que tarda cada
+ *  llamada, eso son más de cuatro horas de pestaña abierta.
+ *
+ *  POR QUÉ CUATRO Y NO CUARENTA. Gemini limita cuántas llamadas por minuto
+ *  acepta. Pasado ese límite empieza a contestar 429 y el trabajo se frena
+ *  solo, así que subir este número más allá de cierto punto no acelera nada:
+ *  cambia esperar por ser rechazado.
+ */
+const A_LA_VEZ = 4;
+
+/** Corre `tarea` sobre cada cosa, de a `cuantas` al mismo tiempo. */
+async function enParalelo(cosas, cuantas, tarea) {
+  const salida = new Array(cosas.length);
+  let siguiente = 0;
+  const obreros = Array.from({ length: Math.min(cuantas, cosas.length) }, async () => {
+    while (true) {
+      const i = siguiente++;
+      if (i >= cosas.length) return;
+      salida[i] = await tarea(cosas[i], i);
+    }
+  });
+  await Promise.all(obreros);
+  return salida;
+}
+
+/** ¿Este error es Gemini diciendo «pará un poco»? */
+const esDemasiadoRapido = (e) => /429|quota|RESOURCE_EXHAUSTED|rate/i.test(String(e?.message || ""));
+
 /** Compara dos claves sin que el TIEMPO que tarda diga cuánto coincidían.
  *
  *  Un `===` normal corta en la primera letra distinta, así que tarda un
@@ -114,12 +146,21 @@ export async function POST(pedido) {
 
     let hechas = 0;
     let tramosGuardados = 0;
+    let esperarMs = 0;
     const problemas = [];
 
-    for (const carta of cartas) {
-      // Si no queda tiempo, se corta y se devuelve lo hecho. La página
-      // vuelve a llamar: lo que falta sigue faltando y nada se pierde.
-      if (restante() < 8000) break;
+    for (const [posicion, carta] of cartas.entries()) {
+      // LA PRIMERA CARTA DE LA TANDA SIEMPRE SE INTENTA, con todo el
+      // presupuesto. Las que siguen, sólo si queda tiempo.
+      //
+      // No es un detalle: la carta más larga del corpus tiene 34.529
+      // caracteres, o sea 26 tramos. Con la regla anterior —«si queda menos
+      // de ocho segundos, cortá»— esa carta podía no entrar NUNCA: siempre
+      // habría otra adelante comiéndose el presupuesto. Y como las pendientes
+      // se piden siempre en el mismo orden, una carta que no entra vuelve a
+      // salir primera en la tanda siguiente, y en la siguiente. El trabajo
+      // entero se habría trabado en esa carta sin que nada pareciera roto.
+      if (posicion > 0 && restante() < 10000) break;
 
       const tramos = tramosConIndice(carta.texto);
       if (!tramos.length) {
@@ -128,23 +169,19 @@ export async function POST(pedido) {
       }
 
       try {
-        const conVector = [];
-        for (const tramo of tramos) {
-          if (restante() < 4000) break;
-          const embedding = await vectorDeTexto(
-            tramo.texto,
-            process.env.GEMINI_API_KEY,
-            DIMENSION
-          );
-          conVector.push({ ...tramo, embedding });
-        }
+        // Los tramos de una carta se piden de a varios a la vez. Es lo que
+        // hace que once mil tramos sean una tarde y no varios días.
+        const conVector = await enParalelo(tramos, A_LA_VEZ, async (tramo) => ({
+          ...tramo,
+          embedding: await vectorDeTexto(tramo.texto, process.env.GEMINI_API_KEY, DIMENSION),
+        }));
 
-        // TODOS LOS TRAMOS O NINGUNO. Si nos quedamos sin tiempo a mitad de
-        // una carta, no se guarda lo que haya: media carta vectorizada deja
-        // de estar pendiente y nadie se entera nunca de que le falta la otra
-        // mitad. Se descarta y se vuelve a empezar esa carta en la tanda
-        // siguiente, que cuesta unos segundos y no una mentira silenciosa.
-        if (conVector.length !== tramos.length) break;
+        // TODOS LOS TRAMOS O NINGUNO. Media carta vectorizada deja de estar
+        // pendiente y nadie se entera nunca de que le falta la otra mitad.
+        if (conVector.length !== tramos.length || conVector.some((c) => !c?.embedding)) {
+          problemas.push(`${carta.carta_id}: no se completaron los ${tramos.length} tramos`);
+          continue;
+        }
 
         const guardados = await rpc("guardar_chunks_de_carta", {
           p_carta_id: carta.carta_id,
@@ -163,12 +200,18 @@ export async function POST(pedido) {
           console.warn("vectorizar: la base RECHAZÓ los tramos de", carta.carta_id);
         }
       } catch (e) {
-        // Una carta que falla no tiene que cortar la tanda entera: se anota y
-        // se sigue con la próxima.
         problemas.push(`${carta.carta_id}: ${mensajeParaAfuera(e).slice(0, 120)}`);
         console.warn("vectorizar:", carta.carta_id, e?.message);
-        // Salvo que sea la cuota de Gemini, donde seguir no tiene sentido.
-        if (/429|quota|RESOURCE_EXHAUSTED/i.test(String(e?.message || ""))) break;
+
+        // SI GEMINI DICE «PARÁ», SE PARA UN RATO Y SE SIGUE. No se abandona.
+        // La versión anterior cortaba el trabajo entero ante un 429, y en una
+        // tarea de once mil tramos un 429 es casi seguro: habría que volver a
+        // la computadora cada tanto a reiniciarla a mano. Ahora se le dice a
+        // la página cuánto esperar y ella sola retoma.
+        if (esDemasiadoRapido(e)) {
+          esperarMs = 60000;
+          break;
+        }
       }
     }
 
@@ -177,6 +220,7 @@ export async function POST(pedido) {
       hechas,
       tramos: tramosGuardados,
       problemas,
+      esperarMs,
       avance: primeraFila(await rpc("avance_de_vectores", {})),
     });
   } catch (e) {

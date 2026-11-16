@@ -113,7 +113,12 @@ export default function Tareas() {
         const r = await fetch("/api/vectorizar", {
           method: "POST",
           headers: { "Content-Type": "application/json", "x-clave-de-tareas": clave },
-          body: JSON.stringify({ lote: 3 }),
+          // Seis por tanda, no tres. La medición dio el tamaño real: 7.949
+          // cartas y unos once mil tramos. Cada tanda cuesta dos viajes a la
+          // base además de los vectores, así que con tandas chicas la mitad
+          // del tiempo se va en ida y vuelta. Seis entran holgadas en los 45
+          // segundos de presupuesto, incluso si todas fueran largas.
+          body: JSON.stringify({ lote: 6 }),
         });
         const d = await r.json();
         if (d.error) throw new Error(d.error);
@@ -128,6 +133,18 @@ export default function Tareas() {
 
         hechas += d.hechas || 0;
         setHechasEnEstaVuelta(hechas);
+
+        // Gemini pidió un respiro. No es un error: en un trabajo de once mil
+        // tramos es casi inevitable. Se espera lo que pidió y se sigue sola,
+        // en vez de hacerte volver a la computadora a reiniciarla.
+        if (d.esperarMs > 0) {
+          const seg = Math.round(d.esperarMs / 1000);
+          anotar(`Gemini pidió esperar · pauso ${seg} segundos y sigo`);
+          await new Promise((listo) => setTimeout(listo, d.esperarMs));
+          vaciasSeguidas = 0;
+          continue;
+        }
+
         if (d.hechas > 0) {
           anotar(`${d.hechas} carta(s) · ${d.tramos} tramos`);
           vaciasSeguidas = 0;
