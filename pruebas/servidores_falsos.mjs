@@ -187,6 +187,9 @@ export async function levantar() {
   // Que una traducción que falla no tarde cuarenta y cinco segundos en los tests.
   process.env.TRADUCIR_PRESUPUESTO_MS = "4000";
   process.env.TRADUCIR_POR_LLAMADA_MS = "1200";
+  // El freno de ritmo de la vectorización, que en producción es de 700 ms
+  // para no pasarse de la cuota de Gemini. Acá no hay cuota que cuidar.
+  process.env.VECTORIZAR_RITMO_MS = "20";
 
   return async function cerrar() {
     await Promise.all([

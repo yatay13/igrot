@@ -107,18 +107,17 @@ export default function Tareas() {
 
     let hechas = 0;
     let vaciasSeguidas = 0;
+    let fallosSeguidos = 0;
 
     while (!quieroParar.current) {
       try {
         const r = await fetch("/api/vectorizar", {
           method: "POST",
           headers: { "Content-Type": "application/json", "x-clave-de-tareas": clave },
-          // Seis por tanda, no tres. La medición dio el tamaño real: 7.949
-          // cartas y unos once mil tramos. Cada tanda cuesta dos viajes a la
-          // base además de los vectores, así que con tandas chicas la mitad
-          // del tiempo se va en ida y vuelta. Seis entran holgadas en los 45
-          // segundos de presupuesto, incluso si todas fueran largas.
-          body: JSON.stringify({ lote: 6 }),
+          // Doce por tanda. Ahora que las cartas se superponen de a cuatro
+          // del lado del servidor, una tanda de doce son tres esperas, no
+          // doce: entra holgada en el presupuesto y se ahorran viajes.
+          body: JSON.stringify({ lote: 12 }),
         });
         const d = await r.json();
         if (d.error) throw new Error(d.error);
@@ -162,14 +161,37 @@ export default function Tareas() {
           }
         }
       } catch (e) {
-        setError(String(e.message || e));
-        anotar(`⚠️ ${e.message || e}`);
-        break;
+        // UN TROPEZÓN NO TERMINA EL TRABAJO.
+        //
+        // Antes, cualquier error cortaba la corrida y había que volver a la
+        // computadora a apretar Empezar. En la primera corrida de verdad, un
+        // `Supabase 500` suelto la frenó a los cuatro minutos. En una tarea
+        // de tres horas eso pasa varias veces: la base tiene un mal momento,
+        // se corta un segundo la conexión, Vercel recicla la función.
+        //
+        // Ninguna de esas cosas es motivo para abandonar. Se espera un poco
+        // —cada vez un poco más— y se vuelve a intentar. Sólo después de
+        // cinco tropezones SEGUIDOS se para, porque ahí ya no es mala suerte.
+        fallosSeguidos++;
+        anotar(`⚠️ ${e.message || e}  ·  intento ${fallosSeguidos} de 5`);
+        if (fallosSeguidos >= 5) {
+          setError(
+            `${e.message || e} — cinco intentos seguidos fallaron, así que paré. ` +
+              `Lo hecho está guardado: podés volver a apretar Empezar cuando quieras.`
+          );
+          break;
+        }
+        setError(null);
+        await new Promise((listo) => setTimeout(listo, 3000 * fallosSeguidos));
+        continue;
       }
+      fallosSeguidos = 0;
       // Un respiro entre tandas. No es por educación: Gemini limita cuántas
       // llamadas por minuto acepta, y pegarle sin pausa hace que empiece a
-      // contestar 429 y el trabajo se frene solo.
-      await new Promise((listo) => setTimeout(listo, 900));
+      // contestar 429 y el trabajo se frene solo. Más corto que antes porque
+      // las tandas ahora son del doble de largas: el respiro se paga una vez
+      // cada doce cartas y no cada seis.
+      await new Promise((listo) => setTimeout(listo, 400));
     }
 
     setCorriendo(false);

@@ -223,10 +223,12 @@ describe("vectorizar de verdad", () => {
       pedido = cuerpo;
       return { cuerpo: [] };
     };
+    // El tope es 24: con cuatro cartas superpuestas son seis esperas, que
+    // entran en los 60 segundos que da Vercel. Pedir cien no entraría.
     await vectorizar(postJson("/api/vectorizar", { lote: 100000 }, conClave));
-    assert.equal(pedido.p_cantidad, 10);
+    assert.equal(pedido.p_cantidad, 24);
     await vectorizar(postJson("/api/vectorizar", { lote: "muchas" }, conClave));
-    assert.equal(pedido.p_cantidad, 3);
+    assert.equal(pedido.p_cantidad, 6);
   });
 
   test("si la base RECHAZA los tramos, se informa y no se cuenta como hecha", async () => {
@@ -259,20 +261,64 @@ describe("vectorizar de verdad", () => {
     // de once mil tramos un 429 es casi seguro, así que eso significaba
     // volver a la computadora a reiniciarla a mano cada tanto.
     guion.rpc.vectores_pendientes = {
-      cuerpo: Array.from({ length: 5 }, (_, i) => ({
+      cuerpo: Array.from({ length: 24 }, (_, i) => ({
         carta_id: `c${i}`,
         texto: TEXTO,
         motivo: "falta",
       })),
     };
     guion.embed = { estado: 429, cuerpo: { error: "RESOURCE_EXHAUSTED" } };
-    const d = await (await vectorizar(postJson("/api/vectorizar", { lote: 5 }, conClave))).json();
+    const d = await (await vectorizar(postJson("/api/vectorizar", { lote: 24 }, conClave))).json();
     assert.equal(d.hechas, 0);
     assert.ok(d.esperarMs > 0, "tendría que pedir una espera");
-    assert.equal(d.problemas.length, 1, "y parar la tanda ahí, sin golpear cuatro veces más");
+    // Con las cartas superpuestas, un 429 ya no puede cortar en seco: las que
+    // estaban en vuelo terminan. Pero NO se empiezan más. De veinticuatro,
+    // sólo pueden fallar las pocas que ya estaban en el aire.
+    assert.ok(
+      d.problemas.length <= 5,
+      `fallaron ${d.problemas.length} de 24: después del primer 429 no tendrían que empezar más`
+    );
   });
 
-  test("una carta larguísima entra igual: es la primera y se lleva todo el presupuesto", async () => {
+  test("LAS CARTAS SE SUPERPONEN: doce no tardan doce veces lo que una", async () => {
+  // ESTE TEST EXISTE POR UN ERROR QUE MIS PROPIOS TESTS NO VIERON.
+  //
+  // La primera versión paralelizaba los TRAMOS de cada carta y procesaba las
+  // cartas una tras otra. Como la carta mediana del corpus tiene un solo
+  // tramo, eso no paralelizaba nada: doce cartas eran doce esperas seguidas.
+  // En la corrida real de Ariel, seis cartas tardaron veintitrés segundos y
+  // el trabajo entero daba once horas.
+  //
+  // Mis tests no lo vieron porque el Gemini de mentira contestaba al
+  // instante, y doce esperas de cero siguen siendo cero. Por eso este test
+  // le pone DEMORA de verdad y mide el reloj: es la única forma de que una
+  // prueba note la diferencia entre esperar en fila y esperar junto.
+  const DEMORA = 300;
+  const CUANTAS = 12;
+  guion.rpc.vectores_pendientes = {
+    cuerpo: Array.from({ length: CUANTAS }, (_, i) => ({
+      carta_id: `c${i}`,
+      texto: TEXTO,
+      motivo: "falta",
+    })),
+  };
+  guion.embed = { demora: DEMORA, cuerpo: { embedding: { values: vectorFalso() } } };
+
+  const empezo = Date.now();
+  const d = await (await vectorizar(postJson("/api/vectorizar", { lote: CUANTAS }, conClave))).json();
+  const tardo = Date.now() - empezo;
+
+  assert.equal(d.hechas, CUANTAS, "tendrían que haberse hecho las doce");
+  // En fila serían 12 × 300 = 3.600 ms. Superpuestas de a cuatro, unos 900.
+  // El techo deja aire para la máquina de pruebas, pero no tanto como para
+  // que pase una versión en fila.
+  assert.ok(
+    tardo < DEMORA * CUANTAS * 0.6,
+    `tardó ${tardo} ms; en fila serían ~${DEMORA * CUANTAS} y superpuestas ~${DEMORA * 3}`
+  );
+});
+
+test("una carta larguísima entra igual: es la primera y se lleva todo el presupuesto", async () => {
     // LA CARTA MÁS LARGA DEL CORPUS TIENE 34.529 CARACTERES: 26 tramos. Con
     // la regla anterior podía no entrar nunca, porque siempre había otra
     // adelante comiéndose el tiempo. Y como las pendientes se piden siempre
