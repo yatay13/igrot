@@ -320,6 +320,79 @@ function useTamañoHebreo() {
 }
 
 // ===========================================================================
+//  UN NÚMERO QUE SUBE HASTA SU VALOR
+//
+//  «13.613» leído de golpe es un número. Verlo subir desde cero es la escala
+//  del corpus, que es lo que la portada quiere decir. Dura medio segundo, pasa
+//  una sola vez, y si el visitante pidió menos movimiento no pasa nunca.
+// ===========================================================================
+function useNumeroQueSube(valor) {
+  const [mostrado, setMostrado] = useState(0);
+
+  useEffect(() => {
+    const destino = Number(valor) || 0;
+    if (!destino) return setMostrado(0);
+
+    const quietito =
+      typeof window !== "undefined" &&
+      window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    if (quietito) return setMostrado(destino);
+
+    const DURACION = 650;
+    const empezo = performance.now();
+    let vivo = true;
+    const paso = (ahora) => {
+      if (!vivo) return;
+      const t = Math.min((ahora - empezo) / DURACION, 1);
+      // Arranca rápido y frena al final, que es como se lee un número.
+      const suave = 1 - Math.pow(1 - t, 3);
+      setMostrado(Math.round(destino * suave));
+      if (t < 1) requestAnimationFrame(paso);
+    };
+    requestAnimationFrame(paso);
+    return () => {
+      vivo = false;
+    };
+  }, [valor]);
+
+  return mostrado;
+}
+
+// ===========================================================================
+//  LA BARRA DE LECTURA
+//
+//  Una línea finita arriba de todo que avanza con el scroll. Una carta abierta
+//  puede ser muy larga, y sin esto la única manera de saber cuánto falta es
+//  bajar hasta el final a mirar.
+// ===========================================================================
+function BarraDeLectura() {
+  const [parte, setParte] = useState(0);
+
+  useEffect(() => {
+    const medir = () => {
+      const alto = document.documentElement.scrollHeight - window.innerHeight;
+      setParte(alto > 240 ? Math.min(window.scrollY / alto, 1) : 0);
+    };
+    medir();
+    window.addEventListener("scroll", medir, { passive: true });
+    window.addEventListener("resize", medir);
+    return () => {
+      window.removeEventListener("scroll", medir);
+      window.removeEventListener("resize", medir);
+    };
+  }, []);
+
+  if (parte <= 0) return null;
+  return (
+    <div
+      className="barra-de-lectura"
+      style={{ width: `${parte * 100}%`, opacity: parte > 0.01 ? 1 : 0 }}
+      aria-hidden="true"
+    />
+  );
+}
+
+// ===========================================================================
 export default function Pagina() {
   const [consulta, setConsulta] = useState("");
   const [filtros, setFiltros] = useState(FILTROS_VACIOS);
@@ -339,6 +412,10 @@ export default function Pagina() {
   // Qué carta viene abierta en la dirección, para abrirla sola al entrar.
   const [cartaDelEnlace, setCartaDelEnlace] = useState("");
   const [arriba, setArriba] = useState(true);
+  // Navegación con el teclado: qué carta está enfocada, y una señal que sube
+  // de a uno cada vez que se pide abrir la que está enfocada.
+  const [enfocada, setEnfocada] = useState(-1);
+  const [señalDeApertura, setSeñalDeApertura] = useState(0);
 
   const [tema, setTema] = useTema();
   const [tamañoHebreo, pasoHebreo, cambiarTamañoHebreo] = useTamañoHebreo();
@@ -551,17 +628,63 @@ export default function Pagina() {
     const alTeclear = (e) => {
       const donde = e.target?.tagName;
       const escribiendo =
-        donde === "INPUT" || donde === "TEXTAREA" || donde === "SELECT" || e.target?.isContentEditable;
-      if (e.key === "/" && !escribiendo && !e.ctrlKey && !e.metaKey) {
+        donde === "INPUT" ||
+        donde === "TEXTAREA" ||
+        donde === "SELECT" ||
+        e.target?.isContentEditable;
+
+      if (e.key === "Escape" && donde === "INPUT") {
+        cajaDeTexto.current?.blur();
+        return;
+      }
+      if (escribiendo || e.ctrlKey || e.metaKey || e.altKey) return;
+
+      if (e.key === "/") {
         e.preventDefault();
         cajaDeTexto.current?.focus();
         cajaDeTexto.current?.select();
+        setEnfocada(-1);
+        return;
       }
-      if (e.key === "Escape" && donde === "INPUT") cajaDeTexto.current?.blur();
+
+      // RECORRER LOS RESULTADOS SIN EL MOUSE.
+      //
+      // `j` y `k` son las teclas de siempre para bajar y subir en una lista
+      // —vienen de vi y las usan casi todos los lectores—, y las flechas
+      // hacen lo mismo para quien no las conoce. Con veinte cartas en
+      // pantalla, poder bajar, abrir el original y seguir sin soltar el
+      // teclado cambia cómo se trabaja.
+      const cuantas = resultados?.length || 0;
+      if (!cuantas) return;
+
+      const mover = (paso) => {
+        e.preventDefault();
+        setEnfocada((n) => {
+          const siguiente = Math.min(Math.max(n + paso, 0), cuantas - 1);
+          // Traerla a la vista, con aire arriba para que el buscador pegado
+          // al techo no la tape.
+          const nodo = document.getElementById(`c-${resultados[siguiente]?.id}`);
+          nodo?.scrollIntoView({ behavior: "smooth", block: "center" });
+          return siguiente;
+        });
+      };
+
+      if (e.key === "j" || e.key === "ArrowDown") return mover(enfocada < 0 ? 0 : 1);
+      if (e.key === "k" || e.key === "ArrowUp") return mover(enfocada < 0 ? 0 : -1);
+      if ((e.key === "Enter" || e.key === "o") && enfocada >= 0) {
+        e.preventDefault();
+        setSeñalDeApertura((n) => n + 1);
+      }
+      if (e.key === "Escape") setEnfocada(-1);
     };
     window.addEventListener("keydown", alTeclear);
     return () => window.removeEventListener("keydown", alTeclear);
-  }, []);
+  }, [resultados, enfocada]);
+
+  // Una búsqueda nueva empieza sin nada enfocado.
+  useEffect(() => {
+    setEnfocada(-1);
+  }, [resultados]);
 
   // Para el botón de volver arriba y para que el buscador se pegue al techo.
   useEffect(() => {
@@ -602,8 +725,11 @@ export default function Pagina() {
     return f;
   }, [filtros, facetas]);
 
+  const cartasMostradas = useNumeroQueSube(facetas?.total || 0);
+
   return (
     <div className="envoltorio">
+      <BarraDeLectura />
       {/* LA PORTADA.
           Armada como la portada de un sefer: el nombre hebreo solo y grande,
           una regla, y debajo de qué se trata.
@@ -632,7 +758,7 @@ export default function Pagina() {
             <span>
               <b>
                 {facetas.exactas === false ? "+" : ""}
-                {Number(facetas.total || 0).toLocaleString("es-AR")}
+                {cartasMostradas.toLocaleString("es-AR")}
               </b>{" "}
               cartas
             </span>
@@ -833,11 +959,51 @@ export default function Pagina() {
             no había entrado. */}
         {buscando && <Esqueleto />}
 
-        {!buscando && resultados !== null && !error && (
+        {/* CUANDO NO COINCIDE NINGUNA.
+            Antes era un renglón suelto: «Ninguna carta coincide». Ese es el
+            momento en que alguien está por irse, y lo que hace falta ahí es
+            una salida, no un diagnóstico. Casi siempre la culpa la tiene un
+            filtro que quedó puesto de una búsqueda anterior, así que se lo
+            ofrece sacar de un toque. */}
+        {!buscando && resultados !== null && resultados.length === 0 && !error && (
+          <div className="sin-nada">
+            <p>Ninguna carta coincide.</p>
+            {hayFiltros ? (
+              <>
+                <span className="nota-chica">
+                  Puede ser por los filtros: están achicando la búsqueda a una parte
+                  del corpus.
+                </span>
+                <div className="sin-nada-botones">
+                  <button type="button" onClick={() => buscar(FILTROS_VACIOS, consulta)}>
+                    Buscar en todos los tomos
+                  </button>
+                  <button type="button" onClick={limpiar}>
+                    Empezar de nuevo
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <span className="nota-chica">
+                  Probá con menos palabras, o preguntá de otra manera: la búsqueda
+                  entiende el sentido.
+                </span>
+                <div className="sin-nada-botones">
+                  {EJEMPLOS.slice(0, 2).map((e) => (
+                    <button key={e} type="button" onClick={() => buscarEjemplo(e)}>
+                      {e}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {!buscando && resultados !== null && resultados.length > 0 && !error && (
           <p className="conteo">
-            {resultados.length === 0 ? (
-              "Ninguna carta coincide."
-            ) : total > resultados.length ? (
+            {total > resultados.length ? (
               <>
                 <b>{total.toLocaleString("es-AR")}</b> cartas · mostrando las primeras{" "}
                 {resultados.length}
@@ -847,14 +1013,21 @@ export default function Pagina() {
                 <b>{resultados.length}</b> carta{resultados.length === 1 ? "" : "s"}
               </>
             )}
+            {" · "}
+            <span className="teclas">
+              <kbd>j</kbd> <kbd>k</kbd> para recorrerlas, <kbd>Enter</kbd> para abrir
+              el original
+            </span>
           </p>
         )}
 
         {!buscando &&
-          resultados?.map((carta) => (
+          resultados?.map((carta, i) => (
             <Resultado
               key={carta.id}
               carta={carta}
+              enfocada={i === enfocada}
+              señalDeApertura={i === enfocada ? señalDeApertura : 0}
               libros={facetas?.libros || []}
               alTocarTema={buscarTema}
               palabras={palabras}
@@ -1006,6 +1179,8 @@ function Resultado({
   cambiarTamañoHebreo,
   abrirSola,
   alAbrir,
+  enfocada,
+  señalDeApertura,
 }) {
   const [abierta, setAbierta] = useState(false);
   const [detalle, setDetalle] = useState(null);
@@ -1053,6 +1228,24 @@ function Resultado({
    *
    *  Es lo que hace que compartir el enlace de UNA carta funcione: el que lo
    *  abre no tiene que buscarla en la lista. */
+  /** La tecla Enter sobre la carta enfocada abre o cierra el original.
+   *
+   *  Llega como un número que sube de a uno, y no como un booleano, porque
+   *  hace falta distinguir «la apretó otra vez» de «sigue apretada». Con un
+   *  booleano, dos Enter seguidos sobre la misma carta no se diferencian.
+   */
+  const primeraSeñal = useRef(señalDeApertura);
+  useEffect(() => {
+    if (!señalDeApertura || señalDeApertura === primeraSeñal.current) return;
+    primeraSeñal.current = señalDeApertura;
+    setAbierta((estaba) => {
+      if (!estaba) traerDetalle();
+      alAbrir?.(carta.id, !estaba);
+      return !estaba;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [señalDeApertura]);
+
   useEffect(() => {
     if (!abrirSola) return;
     setAbierta(true);
@@ -1149,7 +1342,12 @@ function Resultado({
   }
 
   return (
-    <article className="carta" ref={mio} id={`c-${carta.id}`}>
+    <article
+      className={enfocada ? "carta enfocada" : "carta"}
+      ref={mio}
+      id={`c-${carta.id}`}
+      aria-current={enfocada ? "true" : undefined}
+    >
       <h2>
         Carta
         {carta.numero_carta ? (
@@ -1307,7 +1505,7 @@ function Resultado({
             </button>
           </div>
           <div className="hebreo" dir="rtl" style={{ "--escala-hebrea": tamañoHebreo }}>
-            {carta.texto}
+            <div className="hebreo-texto">{carta.texto}</div>
           </div>
         </>
       )}

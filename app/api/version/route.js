@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 // Tres veces seguidas estuvimos discutiendo si un arreglo estaba en Vercel o
 // no, mirando de refilón otras respuestas. Con esto se abre la dirección y se
 // lee la fecha: si es vieja, el despliegue no pasó, y no hay más que hablar.
-const PUBLICADO = "2026-11-13 · guardias, banco de pruebas, techo por visitante";
+const PUBLICADO = "2026-11-13b · fondo visible, teclado, original como página";
 
 export async function GET() {
   return Response.json(
@@ -25,6 +25,9 @@ export async function GET() {
         techo_por_visitante: true,
         tiempo_maximo_en_la_base: true,
         clave_de_gemini_en_cabecera: true,
+        fondo_del_sitio: true,
+        navegacion_con_teclado: true,
+        barra_de_lectura: true,
       },
     },
     { headers: { "Cache-Control": "no-store" } }

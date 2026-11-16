@@ -213,7 +213,14 @@ body {
 :root {
   /* El fondo del sitio. `none` = sin fondo. Las dos opciones están arriba. */
   --fondo-del-sitio: var(--dibujo-de-770);
-  --fondo-opacidad: 0.09;
+  /* 0.20, Y EL NÚMERO SE MIDIÓ. Lo dejé primero en 0.09, que es lo que le
+     corresponde a una FOTO: una foto tiene masa y al 9% ya se insinúa. Un
+     dibujo de línea no tiene casi tinta y al 9% no se ve —Ariel lo buscó en
+     la página publicada y no lo encontró—. Comparé 0.09, 0.16, 0.24 y 0.34
+     con cuatro capturas de la misma pantalla: a 0.24 ya compite con el texto
+     y a 0.34 molesta. El punto está acá.
+     Si algún día ponés una FOTO en vez del dibujo, bajá esto a 0.09. */
+  --fondo-opacidad: 0.2;
 
   /* El frente de 770 dibujado a línea. Va acá adentro, como data URI, para
      que no haya que subir ningún archivo y para que no se pida nada por red:
@@ -221,13 +228,20 @@ body {
      entra sin tocar ninguna otra cosa. */
   --dibujo-de-770: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0MDAgMzAwIiBmaWxsPSJub25lIgogICAgIHN0cm9rZT0iIzJhMjExOCIgc3Ryb2tlLXdpZHRoPSIyLjIiIHN0cm9rZS1saW5lY2FwPSJzcXVhcmUiIHN0cm9rZS1saW5lam9pbj0ibWl0ZXIiPgogIDwhLS0gNzcwIEVhc3Rlcm4gUGFya3dheSwgZGUgZnJlbnRlLiBEaWJ1am8gZGUgbMOtbmVhIGhlY2hvIGEgbWFubyBhY8OhOiBubyBlcwogICAgICAgZWwgY2FsY28gZGUgbmluZ3VuYSBmb3RvZ3JhZsOtYS4gLS0+CiAgPCEtLSBjdWVycG8gcHJpbmNpcGFsLCBjb24gZWwgaGFzdGlhbCBlbXBpbmFkbyAtLT4KICA8cGF0aCBkPSJNNzAgMjkwIFYxNDggTDE0MCA5NiBMMjEwIDE0OCBWMjkwIFoiLz4KICA8IS0tIGxhIGNoaW1lbmVhLCBhcG95YWRhIGVuIGVsIGZhbGTDs24geSBubyBlbiBlbCBhaXJlIC0tPgogIDxwYXRoIGQ9Ik0xNzggMTI1IFY4NiBoMTcgdjU5Ii8+CiAgPCEtLSBhbGEgZGVyZWNoYSwgbcOhcyBiYWphIC0tPgogIDxwYXRoIGQ9Ik0yMTAgMjkwIFYxNzYgTDI2OCAxMzQgTDMyNiAxNzYgVjI5MCBaIi8+CiAgPCEtLSBsYSBsw61uZWEgZGVsIHN1ZWxvIC0tPgogIDxwYXRoIGQ9Ik00MCAyOTAgSDM2MCIgc3Ryb2tlLXdpZHRoPSIyLjgiLz4KICA8IS0tIGxhcyB0cmVzIHZlbnRhbmFzIGFsdGFzLCBxdWUgc29uIGxvIHF1ZSBoYWNlIHJlY29ub2NpYmxlIGVsIGZyZW50ZSAtLT4KICA8cGF0aCBkPSJNOTIgMjkwIFYxOTggYTE0IDE0IDAgMCAxIDI4IDAgVjI5MCIvPgogIDxwYXRoIGQ9Ik0xMjYgMjkwIFYxOTggYTE0IDE0IDAgMCAxIDI4IDAgVjI5MCIvPgogIDxwYXRoIGQ9Ik0xNjAgMjkwIFYxOTggYTE0IDE0IDAgMCAxIDI4IDAgVjI5MCIvPgogIDxwYXRoIGQ9Ik0xMDYgMjA4IFYyOTAgTTE0MCAyMDggVjI5MCBNMTc0IDIwOCBWMjkwIiBzdHJva2Utd2lkdGg9IjEuMiIvPgogIDxwYXRoIGQ9Ik05MiAyNDIgSDEyMCBNMTI2IDI0MiBIMTU0IE0xNjAgMjQyIEgxODgiIHN0cm9rZS13aWR0aD0iMS4yIi8+CiAgPCEtLSBsYSBidWhhcmRpbGxhIC0tPgogIDxwYXRoIGQ9Ik0xMjAgMTUwIEwxNDAgMTMyIEwxNjAgMTUwIFYxNjggSDEyMCBaIi8+CiAgPHBhdGggZD0iTTEzMyAxNjggVjE1MiBhNyA3IDAgMCAxIDE0IDAgVjE2OCIgc3Ryb2tlLXdpZHRoPSIxLjIiLz4KICA8IS0tIGxhIGVudHJhZGEsIGVuIGVsIG1lZGlvIGRlbCBhbGEgeSBoYXN0YSBlbCBzdWVsbyAtLT4KICA8cGF0aCBkPSJNMjUwIDI5MCBWMjM2IGExOCAxOCAwIDAgMSAzNiAwIFYyOTAiLz4KICA8cGF0aCBkPSJNMjY4IDIyMiBWMjkwIiBzdHJva2Utd2lkdGg9IjEuMiIvPgogIDxwYXRoIGQ9Ik0yNDQgMjM2IEgyOTIiIHN0cm9rZS13aWR0aD0iMS4yIi8+CiAgPCEtLSB5IGxhcyB2ZW50YW5hcyBhIGxvcyBjb3N0YWRvcyBkZSBsYSBlbnRyYWRhLCBtw6FzIGNvcnRhcyAtLT4KICA8cGF0aCBkPSJNMjI0IDI5MCBWMjEyIGgyMCB2NzgiLz4KICA8cGF0aCBkPSJNMjkyIDI5MCBWMjEyIGgyMCB2NzgiLz4KICA8cGF0aCBkPSJNMjM0IDIxMiBWMjkwIE0zMDIgMjEyIFYyOTAiIHN0cm9rZS13aWR0aD0iMS4yIi8+CiAgPHBhdGggZD0iTTIyNCAyNTAgSDI0NCBNMjkyIDI1MCBIMzEyIiBzdHJva2Utd2lkdGg9IjEuMiIvPgo8L3N2Zz4K");
 }
+/* EN MODO OSCURO EL DIBUJO HAY QUE DARLO VUELTA.
+   Está hecho con trazo oscuro, que es lo correcto sobre papel claro. Sobre el
+   fondo oscuro es tinta negra sobre casi negro: no se ve a NINGUNA opacidad,
+   por alto que se la ponga. `invert(1)` lo vuelve trazo claro; la
+   transparencia no se toca, así que sigue sin tener fondo. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --fondo-opacidad: 0.13;
+    --fondo-opacidad: 0.22;
+    --fondo-invertido: invert(1);
   }
 }
 :root[data-theme="dark"] {
-  --fondo-opacidad: 0.13;
+  --fondo-opacidad: 0.22;
+  --fondo-invertido: invert(1);
 }
 
 body::before {
@@ -241,7 +255,7 @@ body::before {
   background-position: right -4vw top -2vw;
   background-size: min(62vw, 820px) auto;
   opacity: var(--fondo-opacidad);
-  filter: grayscale(1) sepia(0.35) contrast(1.05);
+  filter: grayscale(1) sepia(0.35) contrast(1.05) var(--fondo-invertido, none);
   /* La máscara: entera arriba a la derecha, desvanecida hacia el centro y
      hacia abajo, que es por donde corre el texto. */
   -webkit-mask-image: radial-gradient(
@@ -1051,6 +1065,52 @@ button:disabled {
 /* Una carta se imprime o se guarda en PDF para leerla en papel. Lo que no
    tiene sentido en papel se va: el buscador, los filtros, los botones. */
 /* =========================================================================
+   LA JERARQUÍA DE LA TARJETA
+   ---------------------------------------------------------------------------
+   QUÉ ESTABA AL REVÉS. El título («Carta ג׳תתקמ») estaba grande y en negrita,
+   y el resumen —que es lo ÚNICO que se lee al recorrer una lista de veinte—
+   quedaba en cuerpo de texto común, debajo de dos renglones de datos.
+   Pero nadie busca por el número de carta: se busca leyendo los resúmenes. El
+   número hace falta después, para citar.
+   Así que se dieron vuelta: el resumen pasa a ser lo primero que pesa, y el
+   número y los datos bajan a su tamaño de dato.
+   ========================================================================= */
+.carta h2 {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--suave);
+  letter-spacing: 0.01em;
+}
+.carta .resumen {
+  font-size: 1.06rem;
+  line-height: 1.68;
+  margin-top: 10px;
+  color: var(--texto);
+}
+
+/* Que la tarjeta responda al mouse. Una lista de cajas quietas no dice cuál
+   estás mirando. */
+.carta {
+  transition: box-shadow 180ms ease, border-color 180ms ease, transform 180ms ease;
+}
+.carta:not(.hueso):hover {
+  transform: translateY(-2px);
+  box-shadow: var(--sombra-alta);
+  border-color: var(--borde-fuerte);
+}
+/* Y la que tiene el foco del teclado se marca de verdad, no apenas. */
+.carta.enfocada {
+  border-color: var(--tinta);
+  box-shadow: var(--sombra-alta), 0 0 0 2px color-mix(in oklab, var(--tinta) 28%, transparent);
+}
+.carta.enfocada::before {
+  background: var(--tinta);
+}
+@media (prefers-reduced-motion: reduce) {
+  .carta:not(.hueso):hover { transform: none; }
+}
+
+/* =========================================================================
    LO QUE SE AGREGÓ EN LA PASADA DE NOVIEMBRE
    ========================================================================= */
 
@@ -1361,6 +1421,162 @@ kbd {
   .carta:not(.hueso) { animation: none; }
 }
 
+/* =========================================================================
+   SEGUNDA PASADA: EL ORIGINAL COMO PÁGINA, Y EL MOVIMIENTO
+   ========================================================================= */
+
+/* --- EL ORIGINAL EN HEBREO, TRATADO COMO UNA PÁGINA ---------------------- */
+/* Abrir el original es LO QUE SE VIENE A HACER acá. Hasta ahora era un
+   rectángulo de texto más, con el mismo fondo que todo lo demás. Ahora es una
+   hoja: tiene su propio papel —un punto más cálido que el panel—, un canto
+   de tinta a la derecha (que en hebreo es donde empieza el renglón) y aire
+   suficiente para leer de corrido. */
+.hebreo {
+  position: relative;
+  padding: 26px 30px 26px 26px;
+  border-radius: var(--radio);
+  background:
+    linear-gradient(
+      to left,
+      color-mix(in oklab, var(--tinta-clara) 55%, var(--panel)) 0%,
+      var(--panel) 10%
+    );
+  border: 1px solid var(--borde);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, var(--panel) 80%, #fff);
+  /* LA HOJA OCUPA TODO EL ANCHO; EL QUE SE LIMITA ES EL TEXTO.
+     Antes el tope de ancho estaba en este bloque, y mientras el fondo era
+     plano no se notaba. Al darle papel, borde y canto, el bloque pasó a verse
+     como una hoja… apoyada contra la derecha, con media ficha vacía al lado.
+     Lo vi en una captura. La medida de lectura sigue existiendo —un renglón
+     de 180 caracteres es ilegible— pero ahora la lleva el texto de adentro. */
+  max-width: none;
+}
+
+/* La columna de texto: con su medida de lectura y apoyada a la derecha, que
+   es donde el hebreo empieza el renglón. */
+.hebreo-texto {
+  max-width: var(--ancho-lectura);
+  /* En un bloque `rtl`, `inline-end` es la IZQUIERDA. El margen automático de
+     ese lado es el que empuja la columna hacia la derecha. (Con
+     `margin-inline-start: auto` pasa lo contrario, y queda el hueco muerto
+     justo del lado por donde se empieza a leer.) */
+  margin-inline-end: auto;
+}
+/* El canto va del lado del lomo, que en un libro hebreo es la DERECHA —el
+   mismo lado por el que empieza el renglón y donde está el tinte cálido del
+   papel—. En un bloque `rtl`, ese lado es `inline-start`. Lo tenía en
+   `inline-end` y el canto caía a la izquierda, enfrentado al tinte. */
+.hebreo::before {
+  content: "";
+  position: absolute;
+  inset-block: 14px;
+  inset-inline-start: 0;
+  width: 3px;
+  border-radius: 3px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--tinta) 48%, transparent),
+    color-mix(in oklab, var(--tinta) 10%, transparent)
+  );
+}
+
+/* --- CÓMO APARECEN EL ORIGINAL Y LA TRADUCCIÓN --------------------------- */
+/* Antes aparecían de golpe y la página pegaba un salto: lo que estabas
+   leyendo se iba para abajo sin aviso. Con una entrada corta se entiende que
+   el bloque se está abriendo ahí y la vista lo sigue. */
+.hebreo,
+.traduccion {
+  animation: desplegar 240ms ease both;
+}
+@keyframes desplegar {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: none; }
+}
+.mandos-hebreo {
+  animation: desplegar 200ms ease both;
+}
+
+/* --- EL PANEL DE FILTROS ------------------------------------------------- */
+.filtros[open] > .rejilla,
+.filtros[open] > .pie-filtros {
+  animation: desplegar 200ms ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hebreo,
+  .traduccion,
+  .mandos-hebreo,
+  .filtros[open] > .rejilla,
+  .filtros[open] > .pie-filtros {
+    animation: none;
+  }
+}
+
+/* --- LA BARRA DE LECTURA ------------------------------------------------- */
+/* Una línea finita arriba de todo que avanza con el scroll. En una carta
+   abierta —que puede ser muy larga— es la única manera de saber cuánto falta
+   sin bajar hasta el final a mirar. */
+.barra-de-lectura {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 3px;
+  z-index: 40;
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--tinta) 55%, transparent),
+    var(--tinta)
+  );
+  border-end-end-radius: 3px;
+  transition: width 90ms linear, opacity 200ms ease;
+  pointer-events: none;
+}
+
+/* --- CUANDO NO COINCIDE NINGUNA ------------------------------------------ */
+/* Antes era un renglón suelto que decía «Ninguna carta coincide» y nada más.
+   Es el momento en que alguien está a punto de irse: lo que hace falta ahí es
+   una salida, no un diagnóstico. */
+.sin-nada {
+  margin: 26px auto;
+  padding: 28px 24px;
+  max-width: 560px;
+  text-align: center;
+  background: var(--panel);
+  border: 1px dashed var(--borde-fuerte);
+  border-radius: var(--radio);
+}
+.sin-nada p {
+  margin: 0 0 6px;
+}
+.sin-nada .nota-chica {
+  display: block;
+  margin-bottom: 16px;
+}
+.sin-nada-botones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+/* --- EL NÚMERO QUE CUENTA ------------------------------------------------ */
+/* Las cifras de la portada suben desde cero la primera vez. No es un adorno
+   gratuito: «13.613» leído de golpe es un número, y verlo subir es la escala
+   del corpus. Dura medio segundo y no vuelve a pasar. */
+.cifras b {
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- EL AYUDAMEMORIA DEL TECLADO ----------------------------------------- */
+.teclas {
+  margin-top: 10px;
+  font-size: 0.78rem;
+  color: var(--suave);
+}
+.teclas kbd {
+  margin: 0 1px;
+}
+
 @media print {
   :root {
     --fondo: #ffffff;
@@ -1425,8 +1641,13 @@ kbd {
   .mandos-hebreo,
   .volver-arriba,
   .esqueleto,
-  .avance {
+  .avance,
+  .barra-de-lectura,
+  .teclas {
     display: none !important;
+  }
+  .hebreo::before {
+    display: none;
   }
   .carta:not(.hueso) {
     animation: none;
