@@ -1,6 +1,6 @@
 # Buscador de las Igrot Kodesh — estado del proyecto
 
-**Versión de este documento: 2026-10-12.**
+**Versión de este documento: 2026-11-17.**
 
 Esto es para que el proyecto se pueda retomar desde cero, con cualquiera y en
 cualquier momento, sin depender de que yo recuerde nada. Mi memoria de trabajo
@@ -2056,3 +2056,350 @@ para pegarlos en Supabase. Los cuadernos y el código del canal
 pruebas era la herramienta que encontró la mitad de mis errores de octubre, y
 lo dejé fuera del repo durante semanas sabiéndolo. **Todo lo que se construye
 va al repo el mismo día.**
+
+---
+
+## 14. Del 12 al 17 de noviembre: seguridad, banco de pruebas y la vectorización sin Colab
+
+**Esta sección cubre cinco días de trabajo que no están en ninguna otra
+parte.** Si estás retomando el proyecto, esto es lo más reciente.
+
+### 14.1 El punto de partida: Colab dejó de andar
+
+Colab no conectaba a ningún entorno de ejecución, y eso trababa dos cosas: el
+arreglo de las fechas hebreas y la vectorización del corpus. Las dos se
+resolvieron **sacando a Colab del medio**, no esperando a que volviera.
+
+La idea, que vale para lo que venga: *la herramienta que no anda no siempre es
+imprescindible; a veces es sólo la que teníamos a mano.*
+
+### 14.2 El calendario hebreo, adentro de Postgres
+
+El conversor de fecha hebrea a gregoriana estaba en Python, en el cuaderno. Se
+reescribió en PL/pgSQL. El calendario hebreo es aritmética pura: el molad de
+Tishrei sale de una fórmula, las cuatro dehiyot son cuatro condiciones, y el
+largo de cada mes sale del largo del año. No necesita ninguna tabla.
+
+- Archivo: **`conversor_de_fechas_hebreas.sql`**
+- Crea `heb_bisiesto`, `heb_dias_hasta_rosh` y `heb_a_gregoriana`
+- El desplazamiento de la época se calibró con **una sola** fecha del corpus
+  (1 de Tishrei de 5720 = 1959-10-03) y dio exactamente **-1373429**, que es
+  la constante de libro. No se ajustó hasta que diera: salió sola.
+- Se verifica contra **19 fechas del propio corpus**, de los tomos 1, 2, 3, 4,
+  8, 14, 18, 19, 21 y 22, incluyendo años bisiestos con `אדר א` y `אדר ב`.
+  Las 19 coinciden, y las pruebas corren cada vez que se aplica el archivo.
+
+**ESTE ARCHIVO ESTÁ ESCRITO Y PROBADO PERO NUNCA SE CORRIÓ EN PRODUCCIÓN.**
+Ariel no llegó a pegarlo en Supabase. Queda pendiente, y con él las 14 cartas
+del `ב` por `כ` y las 16 del `אדר` en año no bisiesto.
+
+### 14.3 La pasada de seguridad del backend
+
+Se revisaron `servicios.js` y las cinco rutas. Diez problemas, nueve de código
+y uno de la base.
+
+**Se rompía de verdad** (comprobado corriendo el código, no suponiendo):
+
+1. `{"filtros": null}` en `/api/buscar` tiraba un 500. El valor por omisión
+   sólo actúa si el campo falta, no si viene nulo, y `Object.values(null)`
+   explota.
+2. Si la base devolvía nulo, `resultados.length` explotaba. Otro 500.
+3. `consulta` aceptaba cualquier cosa: `{"consulta":{"a":1}}` le mandaba a
+   Gemini el texto literal `[object Object]`, y se pagaba esa llamada.
+
+**Puerta al gasto y a la caída:**
+
+4. El tope de tamaño del cuerpo se revisaba *después* de leerlo. Ahora
+   `cuerpoJson` mira `content-length` primero y además cuenta los bytes
+   mientras lee, porque esa cabecera la elige quien llama y puede mentir.
+5. **Ninguna de las cuatro llamadas a Supabase tenía tiempo máximo.** Si
+   Supabase se colgaba, la función esperaba hasta que Vercel la mataba a los
+   60 s y devolvía HTML en vez de JSON — el mismo error que ya estaba
+   arreglado para Gemini, pero por el otro lado.
+6. `/api/buscar` no declaraba `maxDuration`.
+
+**Seguridad:**
+
+7. La clave de Gemini viajaba **en la dirección** (`?key=...`), y el texto
+   crudo de un error de red termina en la pantalla del visitante. Ahora va en
+   la cabecera `x-goog-api-key`, y todo mensaje que sale pasa por
+   `limpiarMensaje`, que tapa lo que tenga forma de clave.
+8. Había una función `guardar()` exportada que escribía **cualquier tabla con
+   cualquier contenido** y no la usaba nadie. Se eliminó.
+9. El techo de gasto era uno solo para todos y por día: **una sola persona
+   podía gastarle el día a todos los demás.** Se agregó un techo por
+   visitante (`techo_por_visitante.sql`), con huella irreversible en vez de
+   la IP.
+10. El estado de RLS en la base **nunca se verificó**: `revisar_la_seguridad_
+    de_la_base.sql` está escrito y probado, y **tampoco se corrió**. Queda
+    pendiente, y es lo único de los diez que sigue abierto.
+
+### 14.4 El banco de pruebas: 220 tests
+
+Está en **`pruebas/`** y corre con `npm test`. No hay dependencias nuevas: usa
+el `node --test` que ya viene con Node 22.
+
+**Cómo está armado, que es lo que lo hace valer.** No hay simulacros de
+`servicios.js`. Se levantan **un Supabase y un Gemini de mentira de verdad**,
+servidores HTTP en la misma máquina, y se apunta la aplicación hacia ellos con
+`SUPABASE_URL` y `GEMINI_BASE`. Así los tests recorren el camino completo
+—ruta, guardias, servicios, red, respuesta— y pueden provocar cosas que con un
+simulacro no se pueden: que la base se cuelgue y no conteste nunca, que Gemini
+devuelva 503 dos veces y a la tercera ande, que la respuesta venga en HTML.
+
+Lo que lo hizo posible estaba en el propio código: `servicios.js` ya tenía
+`GEMINI_BASE` puesta «para poder apuntar a un servidor de prueba».
+
+**Los archivos:**
+
+| archivo | qué cubre |
+|---|---|
+| `pruebas/servidores_falsos.mjs` | el Supabase y el Gemini de mentira |
+| `pruebas/guardias.test.mjs` | cada control de entrada, uno por uno |
+| `pruebas/enlaces.test.mjs` | la búsqueda en la dirección y el resaltado |
+| `pruebas/rutas.test.mjs` | las cinco rutas de punta a punta |
+| `pruebas/seguridad.test.mjs` | los ataques: claves, cuerpos hostiles, inyección |
+| `pruebas/vectorizar.test.mjs` | la ruta que escribe, y el partido en tramos |
+
+**Lo que encontraron, que es la prueba de que sirven:**
+
+- **El reintento anulaba el tope de tiempo.** Cuando la base no contestaba, el
+  primer intento esperaba 12 s y el reintento otros 12: la ruta tardaba 24, más
+  de lo que da Vercel. El tope fallaba justo en el caso para el que se puso.
+- **`idioma: ["es"]` pasaba la lista blanca.** Un arreglo usado como nombre de
+  propiedad se convierte a texto, así que `["es"]` se vuelve `"es"` y
+  `hasOwnProperty` lo aprueba. Después ese arreglo se guardaba en una columna
+  de texto. A ojo no se ve.
+- **El respaldo de `/api/facetas` se caía con una fila rara** — el respaldo,
+  que existe justamente para cuando algo anda mal.
+- **La carta de 27 tramos** (34.529 caracteres, la más larga del corpus) nunca
+  habría entrado en una tanda de vectorización, y habría trabado el trabajo
+  entero sin que nada pareciera roto.
+
+### 14.5 La búsqueda en la dirección, y lo visual
+
+El hueco más grande no era estético: **la dirección del navegador no reflejaba
+la búsqueda.** Eso significaba que no se podía compartir una búsqueda, que
+recargar perdía todo, y que el botón «atrás» **se iba del sitio**.
+
+- Archivo nuevo: **`app/lib/enlaces.js`** (puro, sin React, con sus tests)
+- `igrot.vercel.app/?q=cartas+a+un+médico&tomo=igrot_13` ahora funciona
+- Un enlace a una búsqueda es además una **cita** que se puede poner en un
+  trabajo
+
+Lo demás: fichas de los filtros puestos que se quitan de un toque; resaltado de
+lo buscado (con tildes o sin ellas, en los dos sentidos); esqueleto de carga;
+**copiar cita** con tomo, página, número, fecha hebrea y enlace directo; A+/A−
+para la letra hebrea; interruptor de tema claro/oscuro (el CSS ya lo sabía
+hacer y no había ningún botón que lo tocara); portada que se achica cuando hay
+resultados; buscador pegado al techo; navegación con `j`/`k` y `Enter`; barra
+de lectura; `/` para volver a la caja.
+
+El original en hebreo pasó a estar tratado como una hoja, con su canto de tinta
+del lado derecho (el del lomo en un libro hebreo).
+
+**Dos defectos que aparecieron mirando, no leyendo:**
+
+- **El hueco de la foto de fondo nunca funcionó.** `body::before` está en
+  `z-index: -2`, o sea detrás de `body`, y `body` tenía el color del papel
+  encima: cargaba la imagen y quedaba tapada. Nadie se dio cuenta porque nunca
+  hubo foto puesta — una capa invisible con una imagen invisible se ven igual.
+  Arreglado moviendo el color del papel a `html`. **Si alguien le vuelve a
+  poner `background` a `body`, el fondo desaparece de nuevo.**
+- La hoja del hebreo tenía el ancho de lectura y quedaba apoyada contra la
+  derecha con media ficha vacía. La medida la lleva ahora el texto, no el papel.
+
+### 14.6 La foto del Rebe: por qué no hay una
+
+Casi todas las fotos del Rebe que circulan son de **Jewish Educational Media
+(JEM)** o del Archivo de Lubavitch. No están en dominio público, y **JEM le
+inició juicio a RebbeDrive en 2024** exactamente por esto. La foto de la
+Wikipedia está amparada en «uso legítimo», que es una figura de la Wikipedia y
+no se traslada a este sitio.
+
+El camino correcto es pedirla: <https://jemcentral.org/submit-your-request/>
+
+Mientras tanto, el fondo es **un dibujo a línea del frente de 770 hecho a
+mano** (no es el calco de ninguna foto), guardado como data URI dentro de
+`globals.css`. Se apaga o se cambia en un renglón:
+
+```css
+--fondo-del-sitio: none;                       /* sin fondo */
+--fondo-del-sitio: var(--dibujo-de-770);       /* como está ahora */
+--fondo-del-sitio: url("/rebe.jpg");           /* con una foto con permiso */
+```
+
+La opacidad se midió sacando cuatro capturas de la misma pantalla: a 0,09 un
+dibujo de línea no se ve, a 0,24 compite con el texto. Quedó en **0,20**. Y en
+modo oscuro el dibujo se da vuelta con `invert(1)`, porque trazo oscuro sobre
+fondo oscuro no se ve a ninguna opacidad.
+
+### 14.7 La vectorización sin Colab
+
+Colab tenía que hacer tres cosas: partir el hebreo en tramos, pedirle los
+vectores a Gemini y guardarlos. **El sitio ya sabía hacer las tres.**
+
+**La mitad que vive en la base** — `preparar_la_vectorizacion.sql`:
+
+- `vectores_pendientes(n)` — qué cartas faltan
+- `guardar_chunks_de_carta(carta, idioma, chunks)` — guarda los tramos,
+  **comprobando adentro de la base que cada uno sea de verdad un pedazo de esa
+  carta**, igual que `guardar_traduccion`
+- `avance_de_vectores()` — cuánto falta
+- Se comprueba el esquema antes de crear nada, y se cancela entero si no
+  coincide. Seis pruebas propias que corren solas.
+
+**La mitad que vive en el sitio:**
+
+- `app/lib/tramos.js` — el partido en tramos, con los mismos números del
+  cuaderno (1.500 caracteres, 200 de solape). **No cambiarlos**: en la base ya
+  hay tramos calculados con esos valores, y mezclar granularidades hace que el
+  orden de los resultados dependa de cuándo se vectorizó cada carta.
+- `app/api/vectorizar/route.js` — la tanda. **Es la única ruta del sitio que
+  escribe en el corpus.**
+- `app/tareas/page.js` — la página que la maneja, con barra de avance y
+  registro.
+
+**Los tres cercos de esa ruta:**
+
+1. **No existe** si no está `CLAVE_DE_TAREAS` en Vercel: contesta 404.
+2. Pide esa clave en una cabecera, comparada en tiempo constante.
+3. La base revisa cada tramo. Ese control no se puede saltear.
+
+**Dos errores míos que vale tener presentes:**
+
+- La primera versión usaba `vectorDeConsulta`, que pasa por el techo diario de
+  búsquedas. Vectorizar seis mil cartas habría dejado al sitio **sin búsqueda
+  por significado para todo el mundo durante días**. Por eso existe
+  `vectorDeTexto`, que es el embebido pelado. Hay un test que lo vigila.
+- La primera versión paralelizaba los **tramos** de cada carta, procesando las
+  cartas una tras otra. Como la carta mediana tiene un solo tramo, eso no
+  paralelizaba nada: seis cartas tardaban 23 segundos. **Mis tests no lo
+  vieron porque el Gemini de mentira contestaba al instante**, y seis esperas
+  de cero siguen siendo cero. Ahora hay un test que le pone demora de verdad y
+  mide el reloj.
+
+### 14.8 EL ERROR MÁS CARO: el filtro de ids
+
+En la pasada de seguridad le puse a `idDeCarta` un filtro que sólo aceptaba
+letras latinas, números y unos pocos signos. **Los ids del corpus son el
+nombre del archivo original:**
+
+```
+13) יג - קיץ תשט"ז::00003
+27) כז - תשל"א-תשל"ב::00214
+```
+
+Ese filtro **rechazaba las cartas de verdad**. Con él puesto, «Traducir
+entera» contestaba «falta el id de la carta» para todo el corpus, y la fecha
+hebrea y el lugar no aparecían al abrir una carta.
+
+**El error de fondo no fue el regex: fue inventarme la forma del dato en vez
+de ir a mirarla.** Y apareció de casualidad, porque una medición de otra cosa
+mostró un id real.
+
+La defensa que yo creía estar agregando ya estaba en otro lado: los valores
+viajan a PostgREST por `URLSearchParams`, que los escapa. Lo que quedó en
+`idDeCarta` es lo único que de verdad no puede aparecer en un nombre de
+archivo: caracteres de control.
+
+### 14.9 La cuota de Gemini, que es el límite real
+
+El modelo que usa el sitio para embeddings es **`gemini-embedding-001`**. En
+el plan gratuito tiene dos límites y **son cosas distintas**:
+
+- **por minuto** — «fuiste muy rápido». Se espera un minuto y sigue.
+- **por día** — esperar un minuto **no sirve**.
+
+Los dos llegan como HTTP 429, y mi código los trataba igual porque tiraba el
+cuerpo del error. Resultado: la pausa de 60 segundos se repetía contra las
+mismas tres cartas, sin avanzar ninguna.
+
+Ahora se lee el `quotaId` del cuerpo (`...PerDay...` o `...PerMinute...`) y se
+actúa distinto. Y hay un seguro que no depende del texto de Google: **si dos
+pausas seguidas no vectorizan ni una carta, para igual.**
+
+El ritmo está frenado a propósito a 700 ms entre llamadas (~85 por minuto)
+para quedarse debajo del techo, porque cada 429 cuesta una pausa de un minuto:
+ir más rápido termina más tarde.
+
+### 14.10 Dónde está todo
+
+**En el repositorio** (github.com/yatay13/igrot):
+
+```
+.github/workflows/pruebas.yml   corre los 220 tests en cada subida
+app/lib/guardias.js             todos los controles de entrada
+app/lib/enlaces.js              la búsqueda en la dirección, el resaltado, la cita
+app/lib/tramos.js               el partido en tramos
+app/lib/servicios.js            Gemini y Supabase
+app/api/vectorizar/route.js     la vectorización por tandas
+app/tareas/                     la página que la maneja
+pruebas/                        los 220 tests
+```
+
+**Los SQL** (se pegan en el editor de Supabase; no están en el repo):
+
+| archivo | estado |
+|---|---|
+| `despues_de_cada_carga.sql` | la regla de siempre, después de cada carga |
+| `arreglar_la_comilla_de_nuevo.sql` | **aplicado** |
+| `arreglar_lugar_y_destinatario.sql` | **aplicado** |
+| `techo_por_visitante.sql` | **aplicado** |
+| `estado_de_los_vectores_hoy.sql` | medición, se puede correr siempre |
+| `preparar_la_vectorizacion.sql` | **aplicado** |
+| `conversor_de_fechas_hebreas.sql` | escrito y probado, **sin correr** |
+| `revisar_la_seguridad_de_la_base.sql` | escrito y probado, **sin correr** |
+
+**Las variables de entorno en Vercel:**
+
+```
+SUPABASE_URL        SUPABASE_KEY        GEMINI_API_KEY
+CLAVE_DE_TAREAS     (habilita /api/vectorizar; sin ella, 404)
+SAL_DE_VISITANTES   (opcional, para la huella del techo por visitante)
+```
+
+Cualquier cambio de variable necesita **Redeploy**: no se toma solo.
+
+### 14.11 El estado al 17 de noviembre
+
+- **13.613 cartas** en 32 tomos
+- **Vectores en español**: 13.613 de 13.613 (100%)
+- **Vectores en hebreo**: 9.302 de 13.613 — faltan 4.311 sin vector y 2.053
+  con vectores viejos (del arreglo de la comilla)
+- **220 tests** en verde
+- El cuello de botella es la cuota diaria de embeddings
+
+### 14.12 Lo que queda pendiente, en orden
+
+1. **Terminar la vectorización** desde `/tareas`. Unas 6.364 cartas, ~8.800
+   tramos. Se corta solo cuando se agota la cuota del día; se retoma al día
+   siguiente. La alternativa es habilitar facturación (son centavos).
+2. **Correr `revisar_la_seguridad_de_la_base.sql`** y pegar el resultado.
+   Hace falta saber si RLS está prendido: si no lo está, ninguna mejora de las
+   rutas sirve, porque quien entra por ahí no pasa por las rutas.
+3. **Correr `conversor_de_fechas_hebreas.sql`** y arreglar las fechas: 14
+   cartas del `ב` por `כ`, 16 del `אדר`, y 10 de 1989-1993 que necesitan que
+   alguien mire la página impresa.
+4. **Actualizar `despues_de_cada_carga.sql`** para que rehaga la comilla, la
+   limpieza del hebreo y lugar/destinatario.
+5. **Reconstruir `pruebas_sql/`** y subirlo al repo (ver sección 13).
+6. Los 9 destinatarios que quedaron sin limpiar.
+7. El resto del backlog de la sección 11.
+
+### 14.13 La regla de método que sale de estos cinco días
+
+Las cuatro veces que me equivoqué feo, el patrón fue el mismo: **supuse la
+forma de algo en vez de ir a medirla.**
+
+- Supuse el formato de los ids → rompí «Traducir entera» para todo el corpus.
+- Supuse que paralelizar tramos alcanzaba → el trabajo daba once horas.
+- Supuse que una opacidad de foto servía para un dibujo → no se veía.
+- Supuse que `body::before` se dibujaba → la capa estaba tapada hacía meses.
+
+Y las cuatro veces lo que lo destapó fue **mirar la cosa real**: una salida de
+SQL, una corrida de verdad, una captura de pantalla. Las pruebas que
+contestan al instante no ven los problemas de tiempo, y los comentarios que
+describen lo que el código *debería* hacer no ven lo que hace.
+
+**Medir antes de construir, y mirar el resultado después.**
