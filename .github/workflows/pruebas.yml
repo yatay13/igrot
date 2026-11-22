@@ -1,0 +1,57 @@
+# Corre el banco de pruebas en cada subida y en cada pull request.
+#
+# POR QUÉ VALE LA PENA. Ariel sube los archivos por la página de GitHub, y
+# Vercel publica solo en cuanto el archivo entra. O sea que hasta ahora, si un
+# archivo subía con un error, lo primero que lo decía era el sitio roto.
+#
+# Con esto, GitHub corre los 150 tests en cuanto el archivo entra y pone un
+# tilde verde o una cruz roja al lado del commit. Si sale cruz, se ve ahí
+# mismo qué test falló, antes de ir a mirar la página.
+#
+# No hace falta instalar nada: los tests usan el `node --test` que ya viene
+# con Node, así que no hay dependencias nuevas que se puedan romper.
+
+name: pruebas
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  banco-de-pruebas:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Los tests no necesitan las dependencias de Next: levantan sus propios
+      # servidores con el `node:http` que ya viene. Por eso no hay `npm ci`
+      # acá y el trabajo termina en segundos.
+      - name: correr el banco de pruebas
+        run: npm test
+
+  que-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      # Que Next pueda compilar. Es lo que hace Vercel: si falla acá, falla
+      # allá, y es mejor enterarse en GitHub.
+      - name: compilar
+        run: npm run build
+        env:
+          # Valores de mentira: la compilación no se conecta a nada, pero las
+          # rutas se evalúan y conviene que las variables existan.
+          SUPABASE_URL: https://ejemplo.supabase.co
+          SUPABASE_KEY: clave-de-mentira-para-compilar
+          GEMINI_API_KEY: clave-de-mentira-para-compilar
