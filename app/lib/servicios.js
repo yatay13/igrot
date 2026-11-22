@@ -118,18 +118,49 @@ export function olvidarModelos() {
   cacheDeModelos = null;
 }
 
+/** Los modelos de embeddings que conocemos por su nombre.
+ *
+ *  POR QUÉ HAY UNA LISTA ESCRITA A MANO SI YA SE PREGUNTA CUÁLES HAY.
+ *  Preguntar es mejor: los nombres cambian cada pocos meses y una aplicación
+ *  con uno fijo se rompe sola. Pero preguntar puede fallar, y cuando falla el
+ *  sitio se queda sin poder vectorizar NADA, que es peor que usar un nombre
+ *  viejo. Esta lista es el paracaídas: se usa sólo si la pregunta no trajo
+ *  ninguno. El primero es el que Ariel venía usando de hecho.
+ */
+const EMBEDDINGS_CONOCIDOS = ["gemini-embedding-001", "text-embedding-004"];
+
 async function modelos(apiKey) {
   if (cacheDeModelos) return cacheDeModelos;
   if (!apiKey) throw new Error("falta GEMINI_API_KEY");
 
-  const r = await pedirConTiempo(
-    `${GEMINI}/models`,
-    { headers: cabeceraDeGemini(apiKey) },
-    TIEMPO_MODELOS_MS,
-    "la lista de modelos de Gemini"
-  );
-  if (!r.ok) throw new Error(`no pude listar modelos: HTTP ${r.status}`);
-  const datos = await r.json();
+  // LA LISTA DE MODELOS VIENE PAGINADA, Y YO LEÍA SÓLO LA PRIMERA PÁGINA.
+  //
+  // `GET /models` devuelve de a 50 por omisión y un `nextPageToken` para
+  // pedir el resto. Durante meses anduvo porque los modelos de embeddings
+  // entraban en esas primeras 50. Google fue agregando modelos —cada versión
+  // de Gemini, las de imagen, las de video— y en algún momento los de
+  // embeddings quedaron en la segunda página. Desde entonces el sitio
+  // "no encontraba modelos de embeddings", aunque estuvieran ahí.
+  //
+  // Se pide la página grande y, por las dudas, se siguen los tokens.
+  const crudos = [];
+  let token = "";
+  for (let pagina = 0; pagina < 10; pagina++) {
+    const url =
+      `${GEMINI}/models?pageSize=1000` + (token ? `&pageToken=${encodeURIComponent(token)}` : "");
+    const r = await pedirConTiempo(
+      url,
+      { headers: cabeceraDeGemini(apiKey) },
+      TIEMPO_MODELOS_MS,
+      "la lista de modelos de Gemini"
+    );
+    if (!r.ok) throw new Error(`no pude listar modelos: HTTP ${r.status}`);
+    const pag = await r.json();
+    crudos.push(...(pag.models || []));
+    token = pag.nextPageToken || "";
+    if (!token) break;
+  }
+  const datos = { models: crudos };
 
   const porGeneracion = (a, b) => {
     const version = (n) => {
@@ -172,10 +203,32 @@ async function modelos(apiKey) {
     ],
   };
 
-  // No guardar una lista vacía: si la respuesta vino rara, que el próximo
-  // pedido vuelva a preguntar en vez de quedar sin modelos para siempre
-  // mientras el servidor esté vivo.
-  if (encontrados.embeddings.length || encontrados.texto.length) {
+  // EL PARACAÍDAS. Si la pregunta no trajo ningún modelo de embeddings, se
+  // usan los que conocemos por nombre en vez de quedarse sin poder
+  // vectorizar. Que la lista venga rara no tiene por qué dejar el trabajo
+  // parado.
+  if (!encontrados.embeddings.length) {
+    encontrados.embeddings = [...EMBEDDINGS_CONOCIDOS];
+    encontrados.porElParacaidas = true;
+    console.warn(
+      "Gemini no listó ningún modelo de embeddings en",
+      crudos.length,
+      "modelos; uso los conocidos por nombre"
+    );
+  }
+
+  // AL GUARDAR EN MEMORIA, LA CONDICIÓN ESTABA MAL Y ERA LO QUE HACÍA QUE EL
+  // PROBLEMA DURARA.
+  //
+  // Decía `if (embeddings.length || texto.length)`, con el comentario «no
+  // guardar una lista vacía». Pero con los de texto presentes y los de
+  // embeddings ausentes —que es exactamente lo que pasó— la condición daba
+  // verdadero y se guardaba igual. A partir de ahí, esa copia del servidor
+  // quedaba sin embeddings MIENTRAS VIVIERA: por eso las doce cartas de la
+  // tanda fallaban todas en el mismo segundo, una y otra vez.
+  //
+  // Ahora se exige que estén las dos. Un `||` donde iba un `&&`.
+  if (encontrados.embeddings.length && encontrados.texto.length) {
     cacheDeModelos = encontrados;
   }
   return encontrados;
@@ -228,7 +281,10 @@ function cuotaQueFallo(cuerpo) {
  */
 export async function vectorDeTexto(texto, apiKey, dimension = 1536) {
   const { embeddings } = await modelos(apiKey);
-  let ultimoError = "sin modelos de embeddings";
+  let ultimoError =
+    "Gemini no devolvió ningún modelo de embeddings y tampoco anduvieron los " +
+    "conocidos por nombre. Revisá que la clave sea de un proyecto con la " +
+    "Generative Language API habilitada.";
   let cuotaAgotada = null;
 
   for (const modelo of embeddings.slice(0, 4)) {
