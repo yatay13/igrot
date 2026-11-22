@@ -280,6 +280,82 @@ describe("vectorizar de verdad", () => {
     );
   });
 
+  test("encuentra los modelos de embeddings aunque estén en la SEGUNDA página", async () => {
+    // ESTE ES EL ERROR QUE DEJÓ A ARIEL SIN PODER VECTORIZAR, Y QUE MIS
+    // TESTS NO VEÍAN.
+    //
+    // `GET /models` viene paginado: de a 50 por omisión, con un
+    // `nextPageToken` para el resto. Yo leía sólo la primera página. Durante
+    // meses anduvo porque los de embeddings entraban ahí. Google fue
+    // sumando modelos y en algún momento quedaron en la segunda, y el sitio
+    // empezó a decir «sin modelos de embeddings» con los modelos ahí
+    // delante. Mis servidores de mentira contestaban todo en una sola
+    // página, así que los tests seguían en verde.
+    //
+    // Acá el de embeddings queda ÚLTIMO y las páginas son de a dos.
+    guion.todosLosModelos = {
+      models: [
+        { name: "models/gemini-9.9-flash-lite", supportedGenerationMethods: ["generateContent"] },
+        { name: "models/gemini-9.9-flash", supportedGenerationMethods: ["generateContent"] },
+        { name: "models/gemini-9.9-pro", supportedGenerationMethods: ["generateContent"] },
+        { name: "models/imagen-nuevo", supportedGenerationMethods: ["predict"] },
+        { name: "models/veo-nuevo", supportedGenerationMethods: ["predict"] },
+        { name: "models/gemini-embedding-001", supportedGenerationMethods: ["embedContent"] },
+      ],
+    };
+    guion.modelosPorPagina = 2;
+
+    const d = await (await vectorizar(postJson("/api/vectorizar", { lote: 1 }, conClave))).json();
+    assert.equal(d.hechas, 1, "tendría que haber encontrado el modelo de la página 3");
+    assert.deepEqual(d.problemas, []);
+  });
+
+  test("si la lista NO trae ningún modelo de embeddings, usa los conocidos por nombre", async () => {
+    // El paracaídas. Que la lista venga rara no tiene por qué dejar el
+    // trabajo parado: los nombres de los modelos de embeddings los sabemos.
+    guion.modelos = {
+      cuerpo: {
+        models: [
+          { name: "models/gemini-9.9-flash", supportedGenerationMethods: ["generateContent"] },
+        ],
+      },
+    };
+    const d = await (await vectorizar(postJson("/api/vectorizar", { lote: 1 }, conClave))).json();
+    assert.equal(d.hechas, 1, "tendría que haber vectorizado igual");
+  });
+
+  test("una lista SIN embeddings no se guarda en memoria", async () => {
+    // EL `||` QUE IBA `&&`, Y QUE ERA LO QUE HACÍA QUE EL PROBLEMA DURARA.
+    //
+    // La condición para guardar la lista en memoria decía
+    // `if (embeddings.length || texto.length)`, con el comentario «no
+    // guardar una lista vacía». Pero con los de texto presentes y los de
+    // embeddings ausentes la condición daba verdadero y se guardaba igual:
+    // esa copia del servidor quedaba rota mientras viviera. Por eso las doce
+    // cartas de cada tanda fallaban todas en el mismo segundo.
+    //
+    // Acá la primera llamada recibe una lista sin embeddings y la segunda
+    // una buena. Si se hubiera guardado la mala, la segunda fallaría igual.
+    const { olvidarModelos } = servicios;
+    olvidarModelos();
+    guion.modelos = {
+      cuerpo: {
+        models: [
+          { name: "models/gemini-9.9-flash", supportedGenerationMethods: ["generateContent"] },
+        ],
+      },
+    };
+    // El paracaídas la salva, pero lo que importa es que NO quede guardada.
+    await vectorizar(postJson("/api/vectorizar", { lote: 1 }, conClave));
+
+    guion.modelos = null; // ahora la lista buena
+    const d = await (await vectorizar(postJson("/api/vectorizar", { lote: 1 }, conClave))).json();
+    assert.equal(d.hechas, 1);
+    // y se volvió a preguntar, en vez de usar la mala guardada
+    const listados = peticiones.filter((p) => p.quien === "gemini" && p.url.includes("/models"));
+    assert.ok(listados.length >= 2, `sólo preguntó la lista ${listados.length} vez/veces`);
+  });
+
   test("distingue «fuiste muy rápido» de «se acabó la cuota del día»", async () => {
     // LOS DOS LLEGAN COMO 429 Y SON COSAS MUY DISTINTAS.
     //

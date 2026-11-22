@@ -45,9 +45,11 @@ export const guion = {
   rpc: {},          // por nombre de función: guion.rpc.buscar_cartas = ...
   tablas: {},       // por nombre de tabla:   guion.tablas.cartas = ...
   // --- Gemini ---
-  modelos: null,    // la lista de modelos
-  embed: null,      // :embedContent
-  generar: null,    // :generateContent
+  modelos: null,            // la lista de modelos, de una sola vez
+  modelosPorPagina: 0,      // >0 para que la lista venga paginada, como la real
+  todosLosModelos: null,    // qué lista paginar
+  embed: null,              // :embedContent
+  generar: null,            // :generateContent
 };
 
 /** Vuelve todo a cero entre un test y otro. */
@@ -56,6 +58,8 @@ export function limpiarGuion() {
   guion.rpc = {};
   guion.tablas = {};
   guion.modelos = null;
+  guion.modelosPorPagina = 0;
+  guion.todosLosModelos = null;
   guion.embed = null;
   guion.generar = null;
 }
@@ -157,6 +161,31 @@ export async function levantar() {
     });
 
     if (url.pathname.endsWith("/models")) {
+      // LA LISTA DE MODELOS DE GOOGLE VIENE PAGINADA, Y ESTE SERVIDOR NO LO
+      // IMITABA. Por eso mis tests nunca vieron que la aplicación leía sólo
+      // la primera página: acá todo entraba siempre en una. Cuando Google
+      // sumó modelos y los de embeddings cayeron a la segunda página, el
+      // sitio se quedó «sin modelos de embeddings» y los tests seguían en
+      // verde.
+      //
+      // Con `guion.modelosPorPagina` puesto, este servidor parte la lista y
+      // devuelve `nextPageToken`, como el de verdad.
+      if (guion.modelosPorPagina && !guion.modelos) {
+        const todos = (guion.todosLosModelos ?? MODELOS_POR_OMISION).models;
+        const desde = Number(url.searchParams.get("pageToken") || 0);
+        const cuantos = Math.min(
+          guion.modelosPorPagina,
+          Number(url.searchParams.get("pageSize")) || guion.modelosPorPagina
+        );
+        const pedazo = todos.slice(desde, desde + cuantos);
+        const siguiente = desde + cuantos;
+        return contestar(res, {
+          cuerpo: {
+            models: pedazo,
+            ...(siguiente < todos.length ? { nextPageToken: String(siguiente) } : {}),
+          },
+        });
+      }
       return contestar(
         res,
         normalizar(guion.modelos ?? { cuerpo: MODELOS_POR_OMISION })({ url })
