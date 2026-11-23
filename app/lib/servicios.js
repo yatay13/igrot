@@ -416,33 +416,64 @@ function achicarElVectorDeLaConsulta(valores) {
 //  podría duplicarla. `pedirConTiempo` marca con `porTiempo` el único caso en
 //  que no contestó nadie, y ese es el único que se repite.
 // ---------------------------------------------------------------------------
-const INTENTOS_EN_LA_BASE = 3;
-const TIEMPO_POR_INTENTO_MS = Math.round(TIEMPO_SUPABASE_MS / INTENTOS_EN_LA_BASE);
+// CUÁNTO ESPERA CADA INTENTO, Y POR QUÉ EL PRIMERO ESPERA MÁS.
+//
+// La primera versión de esto partía los doce segundos en tres de cuatro, para
+// que el presupuesto total no creciera. Estaba mal, y de una manera que podía
+// EMPEORAR las cosas: si el pedido no se cuelga para siempre sino que a veces
+// tarda seis u ocho segundos, antes —con un solo intento de doce— entraba, y
+// con intentos de cuatro no entra nunca. Habría cambiado «falla 9 de cada
+// 10» por «falla siempre», y encima con cara de arreglo.
+//
+// Así que el primer intento espera EXACTAMENTE lo que esperaba antes de todo
+// esto: los doce segundos de `TIEMPO_SUPABASE_MS`. Eso le da a esta versión
+// una propiedad que vale la pena escribir: **no puede ser peor que la
+// anterior**. Todo lo que antes entraba, sigue entrando; el segundo intento
+// es puro agregado.
+//
+// Dos y no tres: esta noche se probaron tres conexiones nuevas seguidas y se
+// colgaron las tres, así que los intentos no son independientes y el tercero
+// aporta poco. Lo que sí aporta es que el primero sea largo.
+//
+// Veinte segundos de tope, más uno o dos de Gemini, contra los treinta que
+// la ruta tiene declarados: entra con ocho de margen. Un visitante que
+// espera y recibe sus cartas está mejor que uno que espera menos y recibe un
+// error.
+const TIEMPOS_DE_INTENTO_MS = [TIEMPO_SUPABASE_MS, 8000];
 
 async function pedirleALaBase(url, opciones) {
-  for (let intento = 1; intento <= INTENTOS_EN_LA_BASE; intento++) {
+  const arranque = Date.now();
+  for (let i = 0; i < TIEMPOS_DE_INTENTO_MS.length; i++) {
+    const ultimo = i === TIEMPOS_DE_INTENTO_MS.length - 1;
+    const t0 = Date.now();
     try {
-      return await pedirConTiempo(url, opciones, TIEMPO_POR_INTENTO_MS, "la base");
+      const r = await pedirConTiempo(url, opciones, TIEMPOS_DE_INTENTO_MS[i], "la base");
+      // Que quede escrito cuando un reintento salva la búsqueda: es la prueba
+      // de que el problema de fondo sigue ahí aunque el visitante no lo note.
+      if (i > 0) {
+        console.warn(`la base contestó recién en el intento ${i + 1}, a los ${Date.now() - t0} ms`);
+      }
+      return r;
     } catch (e) {
       if (!e?.porTiempo) throw e;
-      if (intento === INTENTOS_EN_LA_BASE) {
-        // El mensaje que ve el visitante habla del total, no del intento: lo
-        // que esperó fueron doce segundos, aunque adentro fueran tres de
-        // cuatro.
+      // CUÁNTO ESPERÓ DE VERDAD. Este número es el que faltaba toda la noche:
+      // dice si el pedido se cuelga para siempre o si tarda y lo cortamos.
+      console.warn(
+        `la base no contestó en el intento ${i + 1} de ${TIEMPOS_DE_INTENTO_MS.length}; ` +
+          `esperé ${Date.now() - t0} ms; ${ultimo ? "me rindo" : "voy de nuevo"}`
+      );
+      if (ultimo) {
+        // El mensaje que ve el visitante habla del total esperado, no del
+        // último intento.
         const t = new Error(
-          `la base no contestó en ${Math.round(TIEMPO_SUPABASE_MS / 1000)} segundos ` +
-            `(${INTENTOS_EN_LA_BASE} intentos)`
+          `la base no contestó en ${Math.round((Date.now() - arranque) / 1000)} segundos ` +
+            `(${TIEMPOS_DE_INTENTO_MS.length} intentos)`
         );
         t.porTiempo = true;
         throw t;
       }
-      // Queda en los registros de Vercel: si esto aparece seguido, el
-      // problema de fondo sigue ahí aunque el visitante no lo note.
-      console.warn(
-        `la base no contestó en el intento ${intento} de ${INTENTOS_EN_LA_BASE}; voy de nuevo`
-      );
       // Una pausa corta. El intento abortado deja su conexión descartada, así
-      // que el siguiente abre una nueva, que es justamente lo que lo arregla.
+      // que el siguiente abre una nueva.
       await new Promise((listo) => setTimeout(listo, 150));
     }
   }
