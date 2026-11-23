@@ -352,9 +352,99 @@ export async function vectorDeConsulta(texto, apiKey, dimension = 1536, visitant
     throw new Error("se alcanzó el límite diario de búsquedas por significado");
   }
   try {
-    return await vectorDeTexto(texto, apiKey, dimension);
+    return achicarElVectorDeLaConsulta(await vectorDeTexto(texto, apiKey, dimension));
   } catch (e) {
     throw new Error(String(e?.message || e).replace("no pude vectorizar", "no pude vectorizar la consulta"));
+  }
+}
+
+/** Achica el vector de la CONSULTA antes de mandárselo a la base.
+ *
+ *  POR QUÉ. Gemini devuelve números como `-0.013729055`, trece caracteres
+ *  cada uno. Mil quinientos treinta y seis de esos son unos 21 KB de pedido,
+ *  y ese pedido grande es justamente el que se cuelga. Multiplicados por cien
+ *  mil y redondeados quedan `-1373`, cinco caracteres: el pedido baja a unos
+ *  9 KB. Menos de la mitad.
+ *
+ *  POR QUÉ NO CAMBIA NINGÚN RESULTADO. La búsqueda compara por distancia
+ *  coseno, que mide el ÁNGULO entre dos vectores y no su largo. Estirar el
+ *  vector de la consulta cien mil veces no mueve el ángulo ni un grado: el
+ *  orden de las cartas que salen es idéntico. Lo único que se pierde es la
+ *  quinta cifra decimal, que mueve el ángulo en el orden de una milésima de
+ *  grado.
+ *
+ *  Y SÓLO LA CONSULTA, nunca los tramos guardados. Los que están en la base
+ *  quedan como están: esto es lo que viaja, no lo que se guarda.
+ */
+function achicarElVectorDeLaConsulta(valores) {
+  if (!Array.isArray(valores)) return valores;
+  return valores.map((x) => Math.round(x * 1e5));
+}
+
+// ---------------------------------------------------------------------------
+//  UN PEDIDO A LA BASE, CON REINTENTO SI LA CONEXIÓN SE CUELGA
+//
+//  POR QUÉ EXISTE ESTO, Y CON QUÉ MEDICIÓN.
+//
+//  La búsqueda escrita fallaba con «la base no contestó en 12 segundos»
+//  mientras la MISMA consulta, corrida adentro de Supabase, con el mismo
+//  usuario `anon` y la misma frase, tardaba 46 milisegundos. Y en el registro
+//  de la API de Supabase ese pedido NO APARECÍA: no es que tardara, es que no
+//  llegaba.
+//
+//  Tampoco fallaba siempre. Buscando «shabat», el primer intento se colgó y
+//  el segundo, apretado enseguida y sin cambiar nada, devolvió las 463
+//  cartas. Intermitente.
+//
+//  Eso es una conexión que quedó muerta sin avisar: el pedido se escribe en
+//  un socket que del otro lado ya no existe, nadie contesta nunca, y el único
+//  que se entera es el reloj. Un intento nuevo abre una conexión nueva y
+//  anda. Se notaba sobre todo en los dos pedidos que llevan vectores encima
+//  —la búsqueda escrita y la vectorización— porque son los únicos que mandan
+//  treinta kilobytes y los únicos que salen después de haber ido a Gemini,
+//  que es el rato en que la conexión con la base se queda quieta.
+//
+//  EL PRESUPUESTO TOTAL NO CAMBIA. Son los mismos doce segundos, partidos en
+//  tres intentos de cuatro. Esto importa y no es un detalle: la vez anterior
+//  que puse un reintento en esta ruta, el tope de tiempo quedó anulado porque
+//  cada intento se llevaba los doce segundos enteros y la ruta tardaba
+//  veinticuatro —más de lo que Vercel le da—. Con la división, tres intentos
+//  entran en el presupuesto que antes gastaba uno.
+//
+//  Y SÓLO SE REINTENTA POR TIEMPO. Un 404, un 429 o un 500 son respuestas: la
+//  base contestó y dijo algo. Repetirlas no arregla nada y, en una escritura,
+//  podría duplicarla. `pedirConTiempo` marca con `porTiempo` el único caso en
+//  que no contestó nadie, y ese es el único que se repite.
+// ---------------------------------------------------------------------------
+const INTENTOS_EN_LA_BASE = 3;
+const TIEMPO_POR_INTENTO_MS = Math.round(TIEMPO_SUPABASE_MS / INTENTOS_EN_LA_BASE);
+
+async function pedirleALaBase(url, opciones) {
+  for (let intento = 1; intento <= INTENTOS_EN_LA_BASE; intento++) {
+    try {
+      return await pedirConTiempo(url, opciones, TIEMPO_POR_INTENTO_MS, "la base");
+    } catch (e) {
+      if (!e?.porTiempo) throw e;
+      if (intento === INTENTOS_EN_LA_BASE) {
+        // El mensaje que ve el visitante habla del total, no del intento: lo
+        // que esperó fueron doce segundos, aunque adentro fueran tres de
+        // cuatro.
+        const t = new Error(
+          `la base no contestó en ${Math.round(TIEMPO_SUPABASE_MS / 1000)} segundos ` +
+            `(${INTENTOS_EN_LA_BASE} intentos)`
+        );
+        t.porTiempo = true;
+        throw t;
+      }
+      // Queda en los registros de Vercel: si esto aparece seguido, el
+      // problema de fondo sigue ahí aunque el visitante no lo note.
+      console.warn(
+        `la base no contestó en el intento ${intento} de ${INTENTOS_EN_LA_BASE}; voy de nuevo`
+      );
+      // Una pausa corta. El intento abortado deja su conexión descartada, así
+      // que el siguiente abre una nueva, que es justamente lo que lo arregla.
+      await new Promise((listo) => setTimeout(listo, 150));
+    }
   }
 }
 
@@ -362,20 +452,15 @@ export async function vectorDeConsulta(texto, apiKey, dimension = 1536, visitant
 export async function rpc(nombre, argumentos) {
   const { base, clave } = dondeEstaLaBase();
 
-  const r = await pedirConTiempo(
-    `${base}/rest/v1/rpc/${encodeURIComponent(nombre)}`,
-    {
-      method: "POST",
-      headers: {
-        apikey: clave,
-        Authorization: `Bearer ${clave}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(argumentos),
+  const r = await pedirleALaBase(`${base}/rest/v1/rpc/${encodeURIComponent(nombre)}`, {
+    method: "POST",
+    headers: {
+      apikey: clave,
+      Authorization: `Bearer ${clave}`,
+      "Content-Type": "application/json",
     },
-    TIEMPO_SUPABASE_MS,
-    "la base"
-  );
+    body: JSON.stringify(argumentos),
+  });
   if (!r.ok) throw falloDeSupabase(r.status, await r.text());
   return r.json();
 }
@@ -490,12 +575,7 @@ export async function tabla(nombre, parametros = {}, conTotal = false) {
   // llegar acá: dos controles, porque este archivo lo puede llamar código
   // nuevo que se olvide del otro.
   const query = new URLSearchParams(parametros).toString();
-  const r = await pedirConTiempo(
-    `${base}/rest/v1/${nombre}?${query}`,
-    { headers: cabeceras },
-    TIEMPO_SUPABASE_MS,
-    "la base"
-  );
+  const r = await pedirleALaBase(`${base}/rest/v1/${nombre}?${query}`, { headers: cabeceras });
   if (!r.ok) throw falloDeSupabase(r.status, await r.text());
 
   const filas = await r.json();
