@@ -489,6 +489,8 @@ async function pedirleALaBase(url, opciones, tiempos = TIEMPOS_DE_INTENTO_MS) {
  */
 export async function rpc(nombre, argumentos, tiempos) {
   const { base, clave } = dondeEstaLaBase();
+  const cuerpo = JSON.stringify(argumentos);
+  const t0 = Date.now();
 
   const r = await pedirleALaBase(
     `${base}/rest/v1/rpc/${encodeURIComponent(nombre)}`,
@@ -499,12 +501,30 @@ export async function rpc(nombre, argumentos, tiempos) {
         Authorization: `Bearer ${clave}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(argumentos),
+      body: cuerpo,
     },
     tiempos
   );
-  if (!r.ok) throw falloDeSupabase(r.status, await r.text());
-  return r.json();
+
+  // EL INSTRUMENTO, PUESTO A PROPÓSITO Y PENSADO PARA SACARSE.
+  //
+  // Después de muchas horas midiendo la base —que contesta esta misma
+  // consulta en 1,4 segundos— el pedido que sale de Vercel con el vector
+  // adentro no vuelve, y en el registro de Supabase ni figura. Todo lo que
+  // deduje sobre el tamaño del pedido fue a ojo. Esto deja de deducirlo:
+  // anota, para cada llamada, cuántos bytes salieron, cuántos volvieron y
+  // cuánto tardó.
+  //
+  // Se lee el cuerpo como texto y recién después se convierte, porque es la
+  // única manera de saber cuánto pesó la respuesta.
+  const texto = await r.text();
+  console.warn(
+    `base · ${nombre} · mandé ${cuerpo.length} B · volvieron ${texto.length} B · ` +
+      `${r.status} · ${Date.now() - t0} ms`
+  );
+
+  if (!r.ok) throw falloDeSupabase(r.status, texto);
+  return texto ? JSON.parse(texto) : null;
 }
 
 /** ¿Queda cuota para llamar a Gemini hoy?
