@@ -506,22 +506,30 @@ export async function rpc(nombre, argumentos, tiempos) {
     tiempos
   );
 
-  // EL INSTRUMENTO, PUESTO A PROPÓSITO Y PENSADO PARA SACARSE.
+  // EL INSTRUMENTO, AHORA CALLADO SALVO QUE ALGO ANDE MAL.
   //
-  // Después de muchas horas midiendo la base —que contesta esta misma
-  // consulta en 1,4 segundos— el pedido que sale de Vercel con el vector
-  // adentro no vuelve, y en el registro de Supabase ni figura. Todo lo que
-  // deduje sobre el tamaño del pedido fue a ojo. Esto deja de deducirlo:
-  // anota, para cada llamada, cuántos bytes salieron, cuántos volvieron y
-  // cuánto tardó.
+  // Esto fue lo que encontró el problema. La base contestaba la consulta en
+  // milisegundos cuando yo la medía desde la consola, y el sitio esperaba
+  // veinte segundos; durante dos días no pude cruzar esa contradicción
+  // porque no tenía ningún número tomado desde donde pasa de verdad. Este
+  // renglón lo dio: `buscar_cartas · 232 B · 2 B · 5906 ms`.
   //
-  // Se lee el cuerpo como texto y recién después se convierte, porque es la
-  // única manera de saber cuánto pesó la respuesta.
+  // Se queda puesto, pero en silencio: anota sólo cuando una llamada tarda
+  // más de dos segundos. Una base sana nunca llega ahí, así que los
+  // registros quedan limpios y, el día que algo se vuelva a poner lento, el
+  // número va a estar esperando en vez de haber que salir a buscarlo.
+  //
+  // DOS SEGUNDOS Y NO UNO: una búsqueda con la memoria fría puede tardar su
+  // segundo largo sin que pase nada malo. El umbral está para avisar de lo
+  // raro, no de lo normal.
   const texto = await r.text();
-  console.warn(
-    `base · ${nombre} · mandé ${cuerpo.length} B · volvieron ${texto.length} B · ` +
-      `${r.status} · ${Date.now() - t0} ms`
-  );
+  const tardo = Date.now() - t0;
+  if (tardo > 2000) {
+    console.warn(
+      `base lenta · ${nombre} · mandé ${cuerpo.length} B · volvieron ${texto.length} B · ` +
+        `${r.status} · ${tardo} ms`
+    );
+  }
 
   if (!r.ok) throw falloDeSupabase(r.status, texto);
   return texto ? JSON.parse(texto) : null;
