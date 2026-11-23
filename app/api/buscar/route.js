@@ -106,10 +106,48 @@ export async function POST(pedido) {
     // sigue andando, nada más que sin paginar.
     const desde = entero(cuerpo.desplazamiento, 0, 0, TOPE_DESPLAZAMIENTO);
 
+    // EL PEDIDO CON VECTOR SE RINDE RÁPIDO, Y SI SE RINDE SE BUSCA SIN ÉL.
+    //
+    // Medido, y medido mucho: la consulta que manda el sitio tarda **14,7
+    // milisegundos** adentro de Supabase, con el mismo usuario `anon` y la
+    // misma forma de llamada que usa PostgREST. Pero cuando el pedido sale
+    // desde Vercel con el vector adentro, a veces no vuelve nunca: los dos
+    // intentos agotan su presupuesto completo —12.003 ms y 8.001 ms, al
+    // milisegundo— y en el registro de Supabase ese pedido ni figura.
+    //
+    // No sé todavía por qué. Lo que sí sé es que la MISMA función, pedida sin
+    // el vector, contesta siempre: la búsqueda por filtros nunca falló.
+    //
+    // Así que en vez de hacer esperar veinte segundos para terminar en un
+    // error, el intento con vector dura siete y, si no vuelve, se pide lo
+    // mismo sin la parte semántica. El visitante recibe sus cartas —la
+    // búsqueda por palabras exactas es la que más aporta— con un aviso
+    // honesto de que esta vez no hubo búsqueda por significado.
+    //
+    // Esto es un rodeo, no un arreglo, y está escrito acá para que quede
+    // claro: el día que se entienda por qué ese pedido no vuelve, esto se
+    // saca.
+    const TIEMPOS_CON_VECTOR = [4000, 3000];
+
     let crudo;
     let paginable = true;
     try {
-      crudo = await rpc("buscar_cartas", { ...argumentos, desplazamiento: desde });
+      try {
+        crudo = await rpc(
+          "buscar_cartas",
+          { ...argumentos, desplazamiento: desde },
+          vector ? TIEMPOS_CON_VECTOR : undefined
+        );
+      } catch (e) {
+        if (!vector || !e?.porTiempo) throw e;
+        console.warn("buscar: el pedido con vector no volvió; voy sin la parte semántica");
+        vector = null;
+        argumentos.consulta_embedding = null;
+        aviso =
+          "Esta vez busqué sólo por las palabras exactas: la búsqueda por " +
+          "significado no respondió a tiempo. Probá de nuevo en un momento.";
+        crudo = await rpc("buscar_cartas", { ...argumentos, desplazamiento: desde });
+      }
     } catch (e) {
       // SÓLO se reintenta si la función con ese argumento NO EXISTE, que es
       // un 404 de PostgREST. Antes se reintentaba ante CUALQUIER fallo, y eso
