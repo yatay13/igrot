@@ -441,13 +441,13 @@ function achicarElVectorDeLaConsulta(valores) {
 // error.
 const TIEMPOS_DE_INTENTO_MS = [TIEMPO_SUPABASE_MS, 8000];
 
-async function pedirleALaBase(url, opciones) {
+async function pedirleALaBase(url, opciones, tiempos = TIEMPOS_DE_INTENTO_MS) {
   const arranque = Date.now();
-  for (let i = 0; i < TIEMPOS_DE_INTENTO_MS.length; i++) {
-    const ultimo = i === TIEMPOS_DE_INTENTO_MS.length - 1;
+  for (let i = 0; i < tiempos.length; i++) {
+    const ultimo = i === tiempos.length - 1;
     const t0 = Date.now();
     try {
-      const r = await pedirConTiempo(url, opciones, TIEMPOS_DE_INTENTO_MS[i], "la base");
+      const r = await pedirConTiempo(url, opciones, tiempos[i], "la base");
       // Que quede escrito cuando un reintento salva la búsqueda: es la prueba
       // de que el problema de fondo sigue ahí aunque el visitante no lo note.
       if (i > 0) {
@@ -459,7 +459,7 @@ async function pedirleALaBase(url, opciones) {
       // CUÁNTO ESPERÓ DE VERDAD. Este número es el que faltaba toda la noche:
       // dice si el pedido se cuelga para siempre o si tarda y lo cortamos.
       console.warn(
-        `la base no contestó en el intento ${i + 1} de ${TIEMPOS_DE_INTENTO_MS.length}; ` +
+        `la base no contestó en el intento ${i + 1} de ${tiempos.length}; ` +
           `esperé ${Date.now() - t0} ms; ${ultimo ? "me rindo" : "voy de nuevo"}`
       );
       if (ultimo) {
@@ -467,7 +467,7 @@ async function pedirleALaBase(url, opciones) {
         // último intento.
         const t = new Error(
           `la base no contestó en ${Math.round((Date.now() - arranque) / 1000)} segundos ` +
-            `(${TIEMPOS_DE_INTENTO_MS.length} intentos)`
+            `(${tiempos.length} intentos)`
         );
         t.porTiempo = true;
         throw t;
@@ -480,18 +480,29 @@ async function pedirleALaBase(url, opciones) {
 }
 
 /** Llama a una función de Postgres a través de la API de Supabase. */
-export async function rpc(nombre, argumentos) {
+/** Llama a una función de Postgres a través de la API de Supabase.
+ *
+ *  `tiempos` permite pedirle a esta llamada en particular un presupuesto más
+ *  corto que el de siempre. Lo usa la búsqueda: cuando manda el vector quiere
+ *  rendirse rápido para poder contestar sin él, en vez de hacer esperar al
+ *  visitante veinte segundos y después darle un error.
+ */
+export async function rpc(nombre, argumentos, tiempos) {
   const { base, clave } = dondeEstaLaBase();
 
-  const r = await pedirleALaBase(`${base}/rest/v1/rpc/${encodeURIComponent(nombre)}`, {
-    method: "POST",
-    headers: {
-      apikey: clave,
-      Authorization: `Bearer ${clave}`,
-      "Content-Type": "application/json",
+  const r = await pedirleALaBase(
+    `${base}/rest/v1/rpc/${encodeURIComponent(nombre)}`,
+    {
+      method: "POST",
+      headers: {
+        apikey: clave,
+        Authorization: `Bearer ${clave}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(argumentos),
     },
-    body: JSON.stringify(argumentos),
-  });
+    tiempos
+  );
   if (!r.ok) throw falloDeSupabase(r.status, await r.text());
   return r.json();
 }
