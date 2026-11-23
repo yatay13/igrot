@@ -1,6 +1,6 @@
 # Buscador de las Igrot Kodesh — estado del proyecto
 
-**Versión de este documento: 2026-11-17.**
+**Versión de este documento: 2026-11-23.**
 
 Esto es para que el proyecto se pueda retomar desde cero, con cualquiera y en
 cualquier momento, sin depender de que yo recuerde nada. Mi memoria de trabajo
@@ -2403,3 +2403,166 @@ contestan al instante no ven los problemas de tiempo, y los comentarios que
 describen lo que el código *debería* hacer no ven lo que hace.
 
 **Medir antes de construir, y mirar el resultado después.**
+
+---
+
+## 15. Del 22 al 23 de noviembre: la búsqueda rota, y dos días midiendo el lugar equivocado
+
+### 15.1 El síntoma
+
+Después de terminar la vectorización, la búsqueda escrita dejó de funcionar.
+El sitio devolvía *«La base no respondió bien»* y, en los registros de Vercel,
+`57014: canceling statement due to statement timeout`.
+
+La búsqueda **con filtros** seguía andando perfecta. La traducción también. Lo
+único roto era escribir una pregunta en la caja de texto.
+
+Andaba **una de cada diez veces**.
+
+### 15.2 La causa, en una línea
+
+En el plan de ejecución de la consulta real:
+
+```
+->  Nested Loop
+      ->  CTE Scan on candidatas  (rows=1)      <-- cree que hay 1
+      ->  Limit (rows=1000)
+            ->  Index Scan using chunks_embedding_idx
+```
+
+`candidatas` devuelve **13.613** filas y Postgres estimaba **una**. Con esa
+estimación la puso del lado de afuera de un bucle y ejecutó la búsqueda
+vectorial **una vez por cada carta candidata**: trece mil seiscientas
+búsquedas en el índice HNSW para resolver una sola consulta. **19.484 ms.**
+
+Estima mal **sólo cuando llama PostgREST**. Los filtros se comparan contra
+`_.filtro_libro`, `_.filtro_tema`, etc., que son columnas que salen del
+`json_to_record` con que PostgREST desarma el cuerpo del pedido. Para columnas
+así no hay estadísticas: Postgres aplica selectividad por omisión, una por
+cada filtro, y multiplicándolas llega a «una fila».
+
+Llamada con parámetros —desde el SQL Editor, o desde plpgsql— los filtros
+tienen valor conocido, la estimación es 13.613, y el planificador elige otro
+plan. **Eran dos planes distintos para la misma función.**
+
+### 15.3 El arreglo
+
+Una palabra, en `buscar_cartas`:
+
+```sql
+cercanos as materialized (
+```
+
+Una subconsulta `with` usada una sola vez se mete adentro de la consulta y
+queda a merced del plan. Con `materialized` se calcula **una vez, aparte**, y
+recién después se une con lo demás. El nodo pasa a tener `loops=1`.
+
+**19.484 ms → 1.130 ms.** No cambia ninguna condición, ningún orden, ningún
+límite: las mismas cartas en el mismo orden. Lo único que cambia es cuántas
+veces corre la parte cara.
+
+Y es exactamente lo que ya decía el comentario escrito en la propia función
+desde octubre —*«1. `cercanos` pide los N vectores más parecidos... 2. recién
+después se agrupa y se aplican los filtros»*—. La intención estaba bien; lo
+que faltaba era obligar al planificador a respetarla.
+
+### 15.4 El error de método, que es lo que hay que recordar
+
+Tardé **dos días y trece hipótesis equivocadas**. Las trece fueron sobre la
+base de datos, y las trece se cayeron. Esto es lo que las produjo:
+
+**Medí cuarenta veces desde el SQL Editor y ni una sola vez desde donde pasa
+el problema.** Cada medición era correcta y describía un plan de ejecución que
+el sitio nunca usaba.
+
+Las formas concretas que tomó el mismo error:
+
+- **Vector sacado de la tabla.** `select embedding from chunks limit 1` es un
+  nodo del grafo HNSW: el índice le cae encima en dos saltos. El vector de
+  Gemini es un punto nuevo. Probé seis variantes sintéticas y las seis
+  resultaron baratas.
+- **`count(*)` en vez de las columnas.** Contar filas no obliga a Postgres a
+  producir la salida. La función devuelve el texto completo de veinte cartas.
+- **Leer `Execution Time` e ignorar `Planning Time`.** Mi propio extractor
+  decía `regexp_match(plan, 'Execution Time: ...')`. (Resultó no ser la causa
+  —47 ms— pero durante un día no lo supe.)
+- **Medir en caliente creyendo medir en frío.** Cada medición calentaba la
+  siguiente. La diferencia real entre frío y caliente es de 3.000 veces.
+- **Dos o tres mediciones por hipótesis.** Con una instancia cuya latencia
+  varía entre 15 ms y 5.700 ms, dos o tres mediciones alcanzan para
+  «confirmar» casi cualquier cosa.
+
+**Lo que finalmente lo rompió no fue una idea mejor.** Fue poner un
+instrumento adentro de la aplicación que anotara, en cada llamada a Supabase,
+los bytes enviados, los recibidos y el tiempo. El primer renglón útil fue:
+
+```
+base · buscar_cartas · mandé 232 B · volvieron 2 B · 200 · 5906 ms
+```
+
+Eso contradecía todas mis mediciones y obligó a buscar el plan real, que
+Postgres había guardado solo en `auto_explain` con `duration: 19484.675 ms`.
+
+**Regla: cuando la medición y el síntoma se contradicen, el error está en la
+medición. Instrumentar desde donde pasa el problema va primero, no cuarto.**
+
+### 15.5 Lo demás que se arregló en el camino
+
+Todo esto es real y vale aparte del arreglo principal:
+
+- **`avance_de_vectores()`: 23.119 ms → 648 ms.** Para contar los tramos
+  «viejos» comparaba el principio de cada uno de los 19.059 tramos contra el
+  texto completo de su carta: leía unos 230 MB en una memoria de 224 MB, o
+  sea que **vaciaba la cache entera cada vez que corría**. Ahora compara dos
+  huellas md5 de 32 caracteres. Mismas respuestas, exactas: se comprobó
+  contra la cuenta vieja antes de aceptarla.
+- **`vectores_pendientes`: 1.611 ms → 323 ms.** Misma comparación por huellas,
+  y además se pregunta primero por las que faltan —la pregunta barata— y sólo
+  se mira la rama de los viejos si sobró lugar en la tanda.
+- **Dos columnas generadas en `cartas`:** `texto_md5` y `tiene_texto`. La
+  segunda existe porque `coalesce(btrim(texto),'') <> ''` obliga a Postgres a
+  descomprimir los 13.613 textos completos para mirar si están vacíos: 45.577
+  bloques, 356 MB, 139 ms, para contar trece mil filas. Con la columna
+  generada: 256 bloques, 4,7 ms. **El planificador no ve el costo de
+  descomprimir, así que ningún índice lo arregla; hay que no preguntárselo al
+  texto.**
+- **Tabla `vectores_de_carta`**, la libreta de qué versión del texto produjo
+  los vectores de cada carta. Va por carta y no por tramo a propósito: en
+  `chunks` habría obligado a reescribir 588 MB.
+- **La instancia pasó de Nano a Micro**, que en el plan Pro es gratis (mismo
+  precio por hora, el doble de memoria). No arregló la búsqueda —el problema
+  era el plan— pero la cache del índice pasó de 28% a 57%.
+- **Reintento y respaldo en `/api/buscar`:** si el pedido con vector no vuelve,
+  se busca sin la parte semántica y se avisa, en vez de devolver un error.
+  Con el arreglo ya casi no se dispara, pero queda como red.
+- **El vector de la consulta viaja como enteros** (×100.000, redondeado):
+  21 KB → 9 KB. La distancia coseno mide el ángulo, no el largo, así que no
+  cambia ni qué cartas salen ni en qué orden. Hay un test que lo comprueba con
+  la cuenta hecha a mano.
+- **Instrumento permanente, callado:** `servicios.js` anota una llamada a la
+  base sólo si tarda más de dos segundos. Fue lo que encontró esto; se queda
+  puesto para la próxima.
+
+### 15.6 Cosas que quedaron medidas y conviene no volver a discutir
+
+- `buscar_cartas` con vector, como la llama el sitio: **1.130 ms**.
+- `chunks_embedding_idx`: 275 MB. `chunks`: 588 MB. `cartas`: 200 MB.
+  `shared_buffers`: 224 MB. **No entra, y no va a entrar en Micro.**
+- Con `hnsw.ef_search` en 40, pedir `limit 1000` devuelve **40 filas**. Subir
+  el cupo a 1.000 llevó una consulta de 17 ms a 14.999 ms.
+- Los techos de tiempo quedaron en **15 s** para `anon`, `authenticated` y
+  `authenticator`. Estaban en 10/8/8. **El que mandaba era `authenticator`**, y
+  cambiar sólo `anon` no hace nada. Después de cambiarlos hay que correr
+  `notify pgrst, 'reload config';` o la capa de adelante sigue con los viejos.
+- `consumir_cuota_por_visitante` devuelve **404**: `techo_por_visitante.sql`
+  nunca se aplicó. El código lo tolera —lo trata como «falta correr el SQL»—
+  pero es un cabo suelto real.
+
+### 15.7 Si vuelve a pasar algo parecido
+
+1. **Instrumentar la aplicación primero.** Bytes, tiempo, estado, por llamada.
+2. **Buscar el plan real**, no uno reproducido: Supabase → Logs → los renglones
+   de `postgres` con `duration: ... plan: ...`. Ahí está la consulta tal como
+   la mandó PostgREST, con sus parámetros reales.
+3. **Si la medición y el síntoma se contradicen, la medición está mal.**
+4. Recién entonces, hipótesis.
