@@ -127,7 +127,22 @@ export async function POST(pedido) {
     // Esto es un rodeo, no un arreglo, y está escrito acá para que quede
     // claro: el día que se entienda por qué ese pedido no vuelve, esto se
     // saca.
-    const TIEMPOS_CON_VECTOR = [4000, 3000];
+    // POR QUÉ UN SOLO INTENTO Y LARGO, Y NO DOS CORTOS.
+    //
+    // La primera versión de esto daba 4 y 3 segundos. Con eso el respaldo
+    // salta siempre, y el visitante nunca recibe la búsqueda por significado
+    // — que es para lo que existe el buscador.
+    //
+    // El instrumento mostró por qué: la MISMA llamada, sin vector, tarda
+    // entre 1,1 y 5,9 segundos (232 bytes de ida, 2 de vuelta). Con el
+    // vector hay que sumarle lo suyo. Cuatro segundos no alcanzan ni para la
+    // parte barata.
+    //
+    // Doce es lo que había antes de todo esto, y con doce entraba una de
+    // cada diez. Así que se vuelve a doce: el que entra, entra completo; y
+    // el que no, ahora cae al respaldo en vez de terminar en un error.
+    // Peor que esto no puede ser, y para algunos es mejor.
+    const TIEMPOS_CON_VECTOR = [12000];
 
     let crudo;
     let paginable = true;
